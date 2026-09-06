@@ -58,7 +58,7 @@ static nlohmann::json hudEditorElementPayload(
 extern "C" {
 
 JNIEXPORT jint JNICALL
-Java_org_levimc_launcher_core_mods_inbuilt_ExternalModBridge_nativeGetExternalModCount(
+Java_org_chimeramc_launcher_core_mods_inbuilt_ExternalModBridge_nativeGetExternalModCount(
         JNIEnv *env, jclass clazz) {
     (void)env;
     (void)clazz;
@@ -66,7 +66,7 @@ Java_org_levimc_launcher_core_mods_inbuilt_ExternalModBridge_nativeGetExternalMo
 }
 
 JNIEXPORT jstring JNICALL
-Java_org_levimc_launcher_core_mods_inbuilt_ExternalModBridge_nativeGetExternalModInfo(
+Java_org_chimeramc_launcher_core_mods_inbuilt_ExternalModBridge_nativeGetExternalModInfo(
         JNIEnv *env, jclass clazz, jint index) {
     (void)clazz;
     pl::runtime::RegisteredModule mod;
@@ -79,7 +79,7 @@ Java_org_levimc_launcher_core_mods_inbuilt_ExternalModBridge_nativeGetExternalMo
 }
 
 JNIEXPORT jstring JNICALL
-Java_org_levimc_launcher_core_mods_inbuilt_ExternalModBridge_nativeGetExternalModsInfo(
+Java_org_chimeramc_launcher_core_mods_inbuilt_ExternalModBridge_nativeGetExternalModsInfo(
         JNIEnv *env, jclass clazz) {
     (void)clazz;
     std::vector<pl::runtime::RegisteredModule> modules;
@@ -91,7 +91,7 @@ Java_org_levimc_launcher_core_mods_inbuilt_ExternalModBridge_nativeGetExternalMo
 }
 
 JNIEXPORT jstring JNICALL
-Java_org_levimc_launcher_core_mods_inbuilt_ExternalModBridge_nativeGetExternalModConfigSchema(
+Java_org_chimeramc_launcher_core_mods_inbuilt_ExternalModBridge_nativeGetExternalModConfigSchema(
         JNIEnv *env, jclass clazz, jstring moduleId) {
     (void)clazz;
     if (!moduleId) return env->NewStringUTF("");
@@ -104,7 +104,7 @@ Java_org_levimc_launcher_core_mods_inbuilt_ExternalModBridge_nativeGetExternalMo
 }
 
 JNIEXPORT jlong JNICALL
-Java_org_levimc_launcher_core_mods_inbuilt_ExternalModBridge_nativeGetExternalModConfigSchemaRevision(
+Java_org_chimeramc_launcher_core_mods_inbuilt_ExternalModBridge_nativeGetExternalModConfigSchemaRevision(
         JNIEnv *env, jclass clazz, jstring moduleId) {
     (void)clazz;
     if (!moduleId) return 0;
@@ -116,7 +116,7 @@ Java_org_levimc_launcher_core_mods_inbuilt_ExternalModBridge_nativeGetExternalMo
 }
 
 JNIEXPORT void JNICALL
-Java_org_levimc_launcher_core_mods_inbuilt_ExternalModBridge_nativeToggleExternalMod(
+Java_org_chimeramc_launcher_core_mods_inbuilt_ExternalModBridge_nativeToggleExternalMod(
         JNIEnv *env, jclass clazz, jstring moduleId, jboolean enabled) {
 (void)clazz;
 if (!moduleId) {
@@ -130,7 +130,7 @@ env->ReleaseStringUTFChars(moduleId, id);
 }
 
 JNIEXPORT void JNICALL
-Java_org_levimc_launcher_core_mods_inbuilt_ExternalModBridge_nativeSetExternalModConfig(
+Java_org_chimeramc_launcher_core_mods_inbuilt_ExternalModBridge_nativeSetExternalModConfig(
         JNIEnv *env, jclass clazz, jstring moduleId, jstring key, jstring value) {
 (void)clazz;
 if (!moduleId || !key) {
@@ -154,7 +154,7 @@ env->ReleaseStringUTFChars(moduleId, idStr);
 }
 
 JNIEXPORT jint JNICALL
-        Java_org_levimc_launcher_core_mods_inbuilt_ExternalModBridge_nativeGetExternalButtonCount(
+        Java_org_chimeramc_launcher_core_mods_inbuilt_ExternalModBridge_nativeGetExternalButtonCount(
         JNIEnv *env, jclass clazz) {
 (void)env;
 (void)clazz;
@@ -162,7 +162,7 @@ return pl::runtime::GetRegisteredButtonCount();
 }
 
 JNIEXPORT jstring JNICALL
-        Java_org_levimc_launcher_core_mods_inbuilt_ExternalModBridge_nativeGetExternalButtonInfo(
+        Java_org_chimeramc_launcher_core_mods_inbuilt_ExternalModBridge_nativeGetExternalButtonInfo(
         JNIEnv *env, jclass clazz, jint index) {
 (void)clazz;
 pl::runtime::RegisteredButton button;
@@ -198,7 +198,7 @@ return env->NewStringUTF(json.c_str());
 }
 
 JNIEXPORT jbyteArray JNICALL
-        Java_org_levimc_launcher_core_mods_inbuilt_ExternalModBridge_nativeGetExternalButtonIconBytes(
+        Java_org_chimeramc_launcher_core_mods_inbuilt_ExternalModBridge_nativeGetExternalButtonIconBytes(
         JNIEnv *env, jclass clazz, jstring buttonId, jint width, jint height, jboolean active) {
 (void)clazz;
 if (!buttonId) {
@@ -242,7 +242,7 @@ return result;
 }
 
 JNIEXPORT void JNICALL
-Java_org_levimc_launcher_core_mods_inbuilt_ExternalModBridge_nativeDispatchExternalButtonEvent(
+Java_org_chimeramc_launcher_core_mods_inbuilt_ExternalModBridge_nativeDispatchExternalButtonEvent(
         JNIEnv *env, jclass clazz, jstring buttonId, jint event, jfloat value) {
 (void)clazz;
 if (!buttonId) {
@@ -258,7 +258,7 @@ env->ReleaseStringUTFChars(buttonId, id);
 }
 
 JNIEXPORT jbyteArray JNICALL
-Java_org_levimc_launcher_core_mods_inbuilt_MoreButtonsSvgBridge_nativeRenderSvgToPng(
+Java_org_chimeramc_launcher_core_mods_inbuilt_MoreButtonsSvgBridge_nativeRenderSvgToPng(
         JNIEnv *env, jclass clazz, jbyteArray svgData, jint width, jint height) {
     (void)clazz;
     if (!svgData || width <= 0 || height <= 0) {
@@ -294,7 +294,7 @@ Java_org_levimc_launcher_core_mods_inbuilt_MoreButtonsSvgBridge_nativeRenderSvgT
 }
 
 JNIEXPORT jstring JNICALL
-Java_org_levimc_launcher_core_mods_inbuilt_ExternalModBridge_nativeGetHudEditorElementsInfo(
+Java_org_chimeramc_launcher_core_mods_inbuilt_ExternalModBridge_nativeGetHudEditorElementsInfo(
         JNIEnv *env, jclass clazz) {
     (void)clazz;
     std::vector<pl::runtime::InternalHudEditorElement> elements;
@@ -308,7 +308,7 @@ Java_org_levimc_launcher_core_mods_inbuilt_ExternalModBridge_nativeGetHudEditorE
 }
 
 JNIEXPORT void JNICALL
-Java_org_levimc_launcher_core_mods_inbuilt_ExternalModBridge_nativeSetHudSurfaceSize(
+Java_org_chimeramc_launcher_core_mods_inbuilt_ExternalModBridge_nativeSetHudSurfaceSize(
         JNIEnv *env, jclass clazz, jfloat width, jfloat height) {
     (void)env;
     (void)clazz;
@@ -316,7 +316,7 @@ Java_org_levimc_launcher_core_mods_inbuilt_ExternalModBridge_nativeSetHudSurface
 }
 
 JNIEXPORT jlong JNICALL
-Java_org_levimc_launcher_core_mods_inbuilt_ExternalModBridge_nativeGetDrawCommandsRevision(
+Java_org_chimeramc_launcher_core_mods_inbuilt_ExternalModBridge_nativeGetDrawCommandsRevision(
         JNIEnv *env, jclass clazz) {
     (void)env;
     (void)clazz;
@@ -324,7 +324,7 @@ Java_org_levimc_launcher_core_mods_inbuilt_ExternalModBridge_nativeGetDrawComman
 }
 
 JNIEXPORT jobjectArray JNICALL
-        Java_org_levimc_launcher_core_mods_inbuilt_ExternalModBridge_nativeGetDrawCommands(
+        Java_org_chimeramc_launcher_core_mods_inbuilt_ExternalModBridge_nativeGetDrawCommands(
         JNIEnv *env, jclass clazz) {
 (void)clazz;
 std::vector<pl::runtime::InternalDrawCommand> cmds;
@@ -477,7 +477,7 @@ return result;
 }
 
 JNIEXPORT jbyteArray JNICALL
-        Java_org_levimc_launcher_core_mods_inbuilt_ExternalModBridge_nativeGetRegisteredFontBytes(
+        Java_org_chimeramc_launcher_core_mods_inbuilt_ExternalModBridge_nativeGetRegisteredFontBytes(
         JNIEnv *env, jclass clazz, jstring fontId) {
 (void)clazz;
 if (!fontId) {
@@ -518,7 +518,7 @@ return result;
 }
 
 JNIEXPORT jobjectArray JNICALL
-        Java_org_levimc_launcher_core_mods_inbuilt_ExternalModBridge_nativeGetRegisteredImage(
+        Java_org_chimeramc_launcher_core_mods_inbuilt_ExternalModBridge_nativeGetRegisteredImage(
         JNIEnv *env, jclass clazz, jstring imageId) {
 (void)clazz;
 if (!imageId) {
