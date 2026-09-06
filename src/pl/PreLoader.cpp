@@ -56,7 +56,7 @@ JNIEXPORT jint JNI_OnLoad(JavaVM *vm, void *reserved) {
 }
 
 JNIEXPORT jboolean JNICALL
-Java_org_levimc_launcher_core_mods_ModManager_nativeLoadMod__Ljava_lang_String_2Lorg_levimc_launcher_core_mods_Mod_2(
+Java_org_chimeramc_launcher_core_mods_ModManager_nativeLoadMod__Ljava_lang_String_2Lorg_chimeramc_launcher_core_mods_Mod_2(
     JNIEnv *env, jclass clazz, jstring libPath, jobject modObj) {
   (void)clazz;
   (void)modObj;
@@ -64,7 +64,7 @@ Java_org_levimc_launcher_core_mods_ModManager_nativeLoadMod__Ljava_lang_String_2
 }
 
 JNIEXPORT jboolean JNICALL
-Java_org_levimc_launcher_core_mods_ModManager_nativeLoadMod__Ljava_lang_String_2Ljava_lang_String_2Lorg_levimc_launcher_core_mods_Mod_2(
+Java_org_chimeramc_launcher_core_mods_ModManager_nativeLoadMod__Ljava_lang_String_2Ljava_lang_String_2Lorg_chimeramc_launcher_core_mods_Mod_2(
     JNIEnv *env, jclass clazz, jstring libPath, jstring modRootPath,
     jobject modObj) {
   (void)clazz;
@@ -73,7 +73,7 @@ Java_org_levimc_launcher_core_mods_ModManager_nativeLoadMod__Ljava_lang_String_2
 }
 
 JNIEXPORT void JNICALL
-Java_org_levimc_launcher_core_mods_ModManager_nativeEnableLoadedMods(
+Java_org_chimeramc_launcher_core_mods_ModManager_nativeEnableLoadedMods(
     JNIEnv *env, jclass clazz) {
   (void)env;
   (void)clazz;
@@ -82,7 +82,7 @@ Java_org_levimc_launcher_core_mods_ModManager_nativeEnableLoadedMods(
 }
 
 JNIEXPORT void JNICALL
-Java_org_levimc_launcher_core_mods_ModManager_nativeDisableAndUnloadLoadedMods(
+Java_org_chimeramc_launcher_core_mods_ModManager_nativeDisableAndUnloadLoadedMods(
     JNIEnv *env, jclass clazz) {
   (void)env;
   (void)clazz;
@@ -90,7 +90,7 @@ Java_org_levimc_launcher_core_mods_ModManager_nativeDisableAndUnloadLoadedMods(
 }
 
 JNIEXPORT void JNICALL
-Java_org_levimc_launcher_core_minecraft_MinecraftRuntimePreparer_nativeSetupRuntime(
+Java_org_chimeramc_launcher_core_minecraft_MinecraftRuntimePreparer_nativeSetupRuntime(
     JNIEnv *env, jclass clazz, jstring modsPath) {
   (void)clazz;
   if (!modsPath) {
