@@ -90,7 +90,7 @@ std::string ToStdString(JNIEnv *env, jstring value) {
 extern "C" {
 
 JNIEXPORT jboolean JNICALL
-Java_org_chimeramc_launcher_preloader_PreloaderInput_nativeOnTouch(
+Java_org_chimeramc_client_preloader_PreloaderInput_nativeOnTouch(
     JNIEnv *env, jclass clazz, jint action, jint pointerId, jfloat x,
     jfloat y) {
   (void)env;
@@ -101,7 +101,7 @@ Java_org_chimeramc_launcher_preloader_PreloaderInput_nativeOnTouch(
 }
 
 JNIEXPORT jboolean JNICALL
-Java_org_chimeramc_launcher_preloader_PreloaderInput_nativeOnKeyEvent(
+Java_org_chimeramc_client_preloader_PreloaderInput_nativeOnKeyEvent(
     JNIEnv *env, jclass clazz, jint keyCode, jint unicodeChar,
     jboolean isKeyDown) {
   (void)env;
@@ -114,7 +114,7 @@ Java_org_chimeramc_launcher_preloader_PreloaderInput_nativeOnKeyEvent(
 }
 
 JNIEXPORT jboolean JNICALL
-Java_org_chimeramc_launcher_preloader_PreloaderInput_nativeOnTextInput(
+Java_org_chimeramc_client_preloader_PreloaderInput_nativeOnTextInput(
     JNIEnv *env, jclass clazz, jstring text) {
   (void)clazz;
 
@@ -129,7 +129,7 @@ Java_org_chimeramc_launcher_preloader_PreloaderInput_nativeOnTextInput(
 }
 
 JNIEXPORT jboolean JNICALL
-Java_org_chimeramc_launcher_preloader_PreloaderInput_nativeOnMouse(
+Java_org_chimeramc_client_preloader_PreloaderInput_nativeOnMouse(
     JNIEnv *env, jclass clazz, jint button, jboolean isDown) {
   (void)env;
   (void)clazz;
@@ -140,7 +140,7 @@ Java_org_chimeramc_launcher_preloader_PreloaderInput_nativeOnMouse(
 }
 
 JNIEXPORT void JNICALL
-Java_org_chimeramc_launcher_preloader_PreloaderInput_nativeOnDocumentResult(
+Java_org_chimeramc_client_preloader_PreloaderInput_nativeOnDocumentResult(
     JNIEnv *env, jclass clazz, jboolean success, jstring path,
     jstring displayName, jstring error) {
   (void)clazz;
@@ -153,7 +153,7 @@ Java_org_chimeramc_launcher_preloader_PreloaderInput_nativeOnDocumentResult(
 }
 
 JNIEXPORT void JNICALL
-Java_org_chimeramc_launcher_preloader_PreloaderInput_nativeSetActivity(
+Java_org_chimeramc_client_preloader_PreloaderInput_nativeSetActivity(
     JNIEnv *env, jclass clazz, jobject activity) {
   (void)clazz;
 
@@ -161,7 +161,7 @@ Java_org_chimeramc_launcher_preloader_PreloaderInput_nativeSetActivity(
 }
 
 JNIEXPORT void JNICALL
-Java_org_chimeramc_launcher_preloader_PreloaderInput_nativeClearActivity(
+Java_org_chimeramc_client_preloader_PreloaderInput_nativeClearActivity(
     JNIEnv *env, jclass clazz) {
   (void)clazz;
 
@@ -170,7 +170,7 @@ Java_org_chimeramc_launcher_preloader_PreloaderInput_nativeClearActivity(
 }
 
 JNIEXPORT jboolean JNICALL
-Java_org_chimeramc_launcher_preloader_PreloaderInput_nativeIsPauseMenuOpen(
+Java_org_chimeramc_client_preloader_PreloaderInput_nativeIsPauseMenuOpen(
     JNIEnv *env, jclass clazz) {
   (void)env;
   (void)clazz;
@@ -178,7 +178,7 @@ Java_org_chimeramc_launcher_preloader_PreloaderInput_nativeIsPauseMenuOpen(
 }
 
 JNIEXPORT jboolean JNICALL
-Java_org_chimeramc_launcher_preloader_PreloaderInput_nativeIsHudScreenOpen(
+Java_org_chimeramc_client_preloader_PreloaderInput_nativeIsHudScreenOpen(
     JNIEnv *env, jclass clazz) {
   (void)env;
   (void)clazz;
@@ -186,7 +186,7 @@ Java_org_chimeramc_launcher_preloader_PreloaderInput_nativeIsHudScreenOpen(
 }
 
 JNIEXPORT jboolean JNICALL
-Java_org_chimeramc_launcher_preloader_PreloaderInput_nativeIsShowingMenu(
+Java_org_chimeramc_client_preloader_PreloaderInput_nativeIsShowingMenu(
     JNIEnv *env, jclass clazz) {
   (void)env;
   (void)clazz;
@@ -194,7 +194,7 @@ Java_org_chimeramc_launcher_preloader_PreloaderInput_nativeIsShowingMenu(
 }
 
 JNIEXPORT jboolean JNICALL
-Java_org_chimeramc_launcher_preloader_PreloaderInput_nativeShouldForceGlobalModMenu(
+Java_org_chimeramc_client_preloader_PreloaderInput_nativeShouldForceGlobalModMenu(
     JNIEnv *env, jclass clazz) {
   (void)env;
   (void)clazz;
@@ -202,7 +202,7 @@ Java_org_chimeramc_launcher_preloader_PreloaderInput_nativeShouldForceGlobalModM
 }
 
 JNIEXPORT void JNICALL
-Java_org_chimeramc_launcher_preloader_PreloaderInput_nativeConfigureSignatureRules(
+Java_org_chimeramc_client_preloader_PreloaderInput_nativeConfigureSignatureRules(
     JNIEnv *env, jclass clazz, jstring rulesPath, jstring minecraftVersion) {
   (void)clazz;
 
