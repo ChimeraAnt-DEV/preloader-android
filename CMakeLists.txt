@@ -29,6 +29,8 @@ set(PRELOADER_SOURCES
         src/pl/runtime/GameHookRules.cpp
         src/pl/runtime/GameHooks.cpp
         src/pl/runtime/ExternalModBridgeJni.cpp
+        src/pl/runtime/AntEggLoader.cpp
+        src/pl/runtime/AntEggJni.cpp
         src/pl/runtime/InputBridge.cpp
         src/pl/runtime/InputJni.cpp
         src/pl/runtime/JavaRuntime.cpp
@@ -88,6 +90,7 @@ find_library(log-lib log REQUIRED)
 find_library(android-lib android REQUIRED)
 find_library(egl-lib EGL REQUIRED)
 find_library(gles-lib GLESv3 REQUIRED)
+find_library(z-lib z REQUIRED)
 
 if(CMAKE_ANDROID_ARCH_ABI STREQUAL "armeabi-v7a")
     set(GLOSSHOOK_PATH "${CMAKE_CURRENT_SOURCE_DIR}/lib/ARM/libGlossHook.a")
@@ -113,6 +116,7 @@ target_link_libraries(preloader
         ${android-lib}
         ${egl-lib}
         ${gles-lib}
+        ${z-lib}
         nlohmann_json::nlohmann_json
         Boost::pfr
         magic_enum::magic_enum
