@@ -46,6 +46,19 @@ void ShowKeyboardImpl() { CallActivityVoidMethod("showSoftKeyboard"); }
 
 void HideKeyboardImpl() { CallActivityVoidMethod("hideSoftKeyboard"); }
 
+// A callback runs inside the game's own input dispatch. An exception escaping one of them
+// unwinds through game frames (and, on the JNI paths, across the boundary) and takes the
+// process down; a mod that throws on one key press must not kill the session. Treat a throw
+// as "not consumed" so the game still receives the input.
+template <typename Fn>
+bool InvokeSafely(Fn &&fn) {
+  try {
+    return fn();
+  } catch (...) {
+    return false;
+  }
+}
+
 PreloaderInput_Interface g_inputInterface = {
     .RegisterTouchCallback = RegisterLegacyTouchCallback,
     .RegisterKeyEventCallback = RegisterLegacyKeyEventCallback,
@@ -71,7 +84,7 @@ bool DispatchTouch(int action, int pointerId, float x, float y) {
   bool consumed = false;
   for (auto callback : legacyCallbacks) {
     if (callback) {
-      consumed |= callback(action, pointerId, x, y);
+      consumed |= InvokeSafely([&] { return callback(action, pointerId, x, y); });
     }
   }
   const pl::input::TouchEvent event{
@@ -82,7 +95,7 @@ bool DispatchTouch(int action, int pointerId, float x, float y) {
   };
   for (const auto &callback : cppCallbacks) {
     if (callback) {
-      consumed |= callback(event);
+      consumed |= InvokeSafely([&] { return callback(event); });
     }
   }
   return consumed;
@@ -100,7 +113,7 @@ bool DispatchKeyEvent(int keyCode, unsigned int unicodeChar, bool isKeyDown) {
   bool consumed = false;
   for (auto callback : legacyCallbacks) {
     if (callback) {
-      consumed |= callback(keyCode, unicodeChar, isKeyDown);
+      consumed |= InvokeSafely([&] { return callback(keyCode, unicodeChar, isKeyDown); });
     }
   }
   const pl::input::KeyEvent event{
@@ -110,7 +123,7 @@ bool DispatchKeyEvent(int keyCode, unsigned int unicodeChar, bool isKeyDown) {
   };
   for (const auto &callback : cppCallbacks) {
     if (callback) {
-      consumed |= callback(event);
+      consumed |= InvokeSafely([&] { return callback(event); });
     }
   }
   return consumed;
@@ -128,13 +141,13 @@ bool DispatchTextInput(std::string text) {
   bool consumed = false;
   for (auto callback : legacyCallbacks) {
     if (callback) {
-      consumed |= callback(text.data(), text.size());
+      consumed |= InvokeSafely([&] { return callback(text.data(), text.size()); });
     }
   }
   const pl::input::TextInputEvent event{.text = std::move(text)};
   for (const auto &callback : cppCallbacks) {
     if (callback) {
-      consumed |= callback(event);
+      consumed |= InvokeSafely([&] { return callback(event); });
     }
   }
   return consumed;
@@ -152,13 +165,13 @@ bool DispatchMouse(int button, bool isDown) {
   bool consumed = false;
   for (auto callback : legacyCallbacks) {
     if (callback) {
-      consumed |= callback(button, isDown);
+      consumed |= InvokeSafely([&] { return callback(button, isDown); });
     }
   }
   const pl::input::MouseEvent event{.button = button, .isDown = isDown};
   for (const auto &callback : cppCallbacks) {
     if (callback) {
-      consumed |= callback(event);
+      consumed |= InvokeSafely([&] { return callback(event); });
     }
   }
   return consumed;

@@ -122,7 +122,14 @@ Java_org_chimeramc_client_preloader_PreloaderInput_nativeOnTextInput(
   auto decoded = DecodeText(env, text);
   bool consumed = pl::runtime::DispatchTextInput(std::move(decoded.utf8));
   if (!consumed) {
+    // The synthetic key fallback is defined for printable ASCII only. A committed control byte
+    // (Enter arrives as '\n' from several IMEs) must not be replayed as a "character" key --
+    // that is the input that took the instance down when Enter was pressed in chat. The
+    // dedicated key code still delivers the Enter press through DispatchKeyEvent above.
     for (const unsigned int codePoint : decoded.codePoints) {
+      if (codePoint < 0x20U || codePoint > 0x7eU) {
+        continue;
+      }
       consumed |= pl::runtime::DispatchKeyEvent(0, codePoint, true);
     }
   }
