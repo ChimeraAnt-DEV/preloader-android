@@ -13,6 +13,7 @@
 #include "pl/memory/Signature.hpp"
 #include "pl/memory/Vtable.hpp"
 #include "pl/runtime/GameHookRules.h"
+#include "pl/runtime/GameLocalPlayer.h"
 
 namespace pl::runtime {
 namespace {
@@ -103,6 +104,10 @@ void ConfigureGameHooks(std::string rulesPath, std::string minecraftVersion) {
 void InitGameHooks() {
   std::call_once(g_gameHooksOnce, [] {
     g_forceGlobalModMenu.store(false, std::memory_order_relaxed);
+    // The local-player feed is independent of the pause/HUD hooks and is useful on
+    // its own (the voice nametag icons), so it is installed even when the overlay
+    // hooks below cannot be resolved.
+    InitLocalPlayerSource();
     auto signatures = LoadConfiguredGameHookSignatures();
     if (!signatures) {
       return;

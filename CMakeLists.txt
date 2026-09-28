@@ -28,6 +28,7 @@ set(PRELOADER_SOURCES
         src/pl/memory/Vtable.cpp
         src/pl/runtime/GameHookRules.cpp
         src/pl/runtime/GameHooks.cpp
+        src/pl/runtime/GameLocalPlayer.cpp
         src/pl/runtime/ExternalModBridgeJni.cpp
         src/pl/runtime/AntEggLoader.cpp
         src/pl/runtime/AntEggJni.cpp

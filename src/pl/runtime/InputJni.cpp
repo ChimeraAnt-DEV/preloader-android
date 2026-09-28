@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "pl/runtime/GameHooks.h"
+#include "pl/runtime/GameLocalPlayer.h"
 #include "pl/runtime/InputBridge.h"
 #include "pl/runtime/JavaRuntime.h"
 
@@ -208,6 +209,44 @@ Java_org_chimeramc_client_preloader_PreloaderInput_nativeConfigureSignatureRules
 
   pl::runtime::ConfigureGameHooks(ToStdString(env, rulesPath),
                                   ToStdString(env, minecraftVersion));
+}
+
+JNIEXPORT jboolean JNICALL
+Java_org_chimeramc_client_preloader_PreloaderInput_nativeIsLocalPlayerAvailable(
+    JNIEnv *env, jclass clazz) {
+  (void)env;
+  (void)clazz;
+  return pl::runtime::IsLocalPlayerAvailable() ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jfloatArray JNICALL
+Java_org_chimeramc_client_preloader_PreloaderInput_nativeReadLocalPlayerPosition(
+    JNIEnv *env, jclass clazz) {
+  (void)clazz;
+  float position[3] = {0.0f, 0.0f, 0.0f};
+  if (!pl::runtime::ReadLocalPlayerPosition(position)) {
+    return nullptr;
+  }
+  jfloatArray result = env->NewFloatArray(3);
+  if (result != nullptr) {
+    env->SetFloatArrayRegion(result, 0, 3, position);
+  }
+  return result;
+}
+
+JNIEXPORT jfloatArray JNICALL
+Java_org_chimeramc_client_preloader_PreloaderInput_nativeReadLocalPlayerRotation(
+    JNIEnv *env, jclass clazz) {
+  (void)clazz;
+  float rotation[2] = {0.0f, 0.0f};
+  if (!pl::runtime::ReadLocalPlayerRotation(rotation)) {
+    return nullptr;
+  }
+  jfloatArray result = env->NewFloatArray(2);
+  if (result != nullptr) {
+    env->SetFloatArrayRegion(result, 0, 2, rotation);
+  }
+  return result;
 }
 
 } // extern "C"
