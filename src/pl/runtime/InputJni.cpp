@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "pl/runtime/GameHooks.h"
+#include "pl/runtime/GameLocalPlayer.h"
 #include "pl/runtime/InputBridge.h"
 #include "pl/runtime/JavaRuntime.h"
 
@@ -90,7 +91,7 @@ std::string ToStdString(JNIEnv *env, jstring value) {
 extern "C" {
 
 JNIEXPORT jboolean JNICALL
-Java_org_chimeramc_launcher_preloader_PreloaderInput_nativeOnTouch(
+Java_org_chimeramc_client_preloader_PreloaderInput_nativeOnTouch(
     JNIEnv *env, jclass clazz, jint action, jint pointerId, jfloat x,
     jfloat y) {
   (void)env;
@@ -101,7 +102,7 @@ Java_org_chimeramc_launcher_preloader_PreloaderInput_nativeOnTouch(
 }
 
 JNIEXPORT jboolean JNICALL
-Java_org_chimeramc_launcher_preloader_PreloaderInput_nativeOnKeyEvent(
+Java_org_chimeramc_client_preloader_PreloaderInput_nativeOnKeyEvent(
     JNIEnv *env, jclass clazz, jint keyCode, jint unicodeChar,
     jboolean isKeyDown) {
   (void)env;
@@ -114,14 +115,21 @@ Java_org_chimeramc_launcher_preloader_PreloaderInput_nativeOnKeyEvent(
 }
 
 JNIEXPORT jboolean JNICALL
-Java_org_chimeramc_launcher_preloader_PreloaderInput_nativeOnTextInput(
+Java_org_chimeramc_client_preloader_PreloaderInput_nativeOnTextInput(
     JNIEnv *env, jclass clazz, jstring text) {
   (void)clazz;
 
   auto decoded = DecodeText(env, text);
   bool consumed = pl::runtime::DispatchTextInput(std::move(decoded.utf8));
   if (!consumed) {
+    // The synthetic key fallback is defined for printable ASCII only. A committed control byte
+    // (Enter arrives as '\n' from several IMEs) must not be replayed as a "character" key --
+    // that is the input that took the instance down when Enter was pressed in chat. The
+    // dedicated key code still delivers the Enter press through DispatchKeyEvent above.
     for (const unsigned int codePoint : decoded.codePoints) {
+      if (codePoint < 0x20U || codePoint > 0x7eU) {
+        continue;
+      }
       consumed |= pl::runtime::DispatchKeyEvent(0, codePoint, true);
     }
   }
@@ -129,7 +137,7 @@ Java_org_chimeramc_launcher_preloader_PreloaderInput_nativeOnTextInput(
 }
 
 JNIEXPORT jboolean JNICALL
-Java_org_chimeramc_launcher_preloader_PreloaderInput_nativeOnMouse(
+Java_org_chimeramc_client_preloader_PreloaderInput_nativeOnMouse(
     JNIEnv *env, jclass clazz, jint button, jboolean isDown) {
   (void)env;
   (void)clazz;
@@ -140,7 +148,7 @@ Java_org_chimeramc_launcher_preloader_PreloaderInput_nativeOnMouse(
 }
 
 JNIEXPORT void JNICALL
-Java_org_chimeramc_launcher_preloader_PreloaderInput_nativeOnDocumentResult(
+Java_org_chimeramc_client_preloader_PreloaderInput_nativeOnDocumentResult(
     JNIEnv *env, jclass clazz, jboolean success, jstring path,
     jstring displayName, jstring error) {
   (void)clazz;
@@ -153,7 +161,7 @@ Java_org_chimeramc_launcher_preloader_PreloaderInput_nativeOnDocumentResult(
 }
 
 JNIEXPORT void JNICALL
-Java_org_chimeramc_launcher_preloader_PreloaderInput_nativeSetActivity(
+Java_org_chimeramc_client_preloader_PreloaderInput_nativeSetActivity(
     JNIEnv *env, jclass clazz, jobject activity) {
   (void)clazz;
 
@@ -161,7 +169,7 @@ Java_org_chimeramc_launcher_preloader_PreloaderInput_nativeSetActivity(
 }
 
 JNIEXPORT void JNICALL
-Java_org_chimeramc_launcher_preloader_PreloaderInput_nativeClearActivity(
+Java_org_chimeramc_client_preloader_PreloaderInput_nativeClearActivity(
     JNIEnv *env, jclass clazz) {
   (void)clazz;
 
@@ -170,7 +178,7 @@ Java_org_chimeramc_launcher_preloader_PreloaderInput_nativeClearActivity(
 }
 
 JNIEXPORT jboolean JNICALL
-Java_org_chimeramc_launcher_preloader_PreloaderInput_nativeIsPauseMenuOpen(
+Java_org_chimeramc_client_preloader_PreloaderInput_nativeIsPauseMenuOpen(
     JNIEnv *env, jclass clazz) {
   (void)env;
   (void)clazz;
@@ -178,7 +186,7 @@ Java_org_chimeramc_launcher_preloader_PreloaderInput_nativeIsPauseMenuOpen(
 }
 
 JNIEXPORT jboolean JNICALL
-Java_org_chimeramc_launcher_preloader_PreloaderInput_nativeIsHudScreenOpen(
+Java_org_chimeramc_client_preloader_PreloaderInput_nativeIsHudScreenOpen(
     JNIEnv *env, jclass clazz) {
   (void)env;
   (void)clazz;
@@ -186,7 +194,7 @@ Java_org_chimeramc_launcher_preloader_PreloaderInput_nativeIsHudScreenOpen(
 }
 
 JNIEXPORT jboolean JNICALL
-Java_org_chimeramc_launcher_preloader_PreloaderInput_nativeIsShowingMenu(
+Java_org_chimeramc_client_preloader_PreloaderInput_nativeIsShowingMenu(
     JNIEnv *env, jclass clazz) {
   (void)env;
   (void)clazz;
@@ -194,7 +202,7 @@ Java_org_chimeramc_launcher_preloader_PreloaderInput_nativeIsShowingMenu(
 }
 
 JNIEXPORT jboolean JNICALL
-Java_org_chimeramc_launcher_preloader_PreloaderInput_nativeShouldForceGlobalModMenu(
+Java_org_chimeramc_client_preloader_PreloaderInput_nativeShouldForceGlobalModMenu(
     JNIEnv *env, jclass clazz) {
   (void)env;
   (void)clazz;
@@ -202,12 +210,50 @@ Java_org_chimeramc_launcher_preloader_PreloaderInput_nativeShouldForceGlobalModM
 }
 
 JNIEXPORT void JNICALL
-Java_org_chimeramc_launcher_preloader_PreloaderInput_nativeConfigureSignatureRules(
+Java_org_chimeramc_client_preloader_PreloaderInput_nativeConfigureSignatureRules(
     JNIEnv *env, jclass clazz, jstring rulesPath, jstring minecraftVersion) {
   (void)clazz;
 
   pl::runtime::ConfigureGameHooks(ToStdString(env, rulesPath),
                                   ToStdString(env, minecraftVersion));
+}
+
+JNIEXPORT jboolean JNICALL
+Java_org_chimeramc_client_preloader_PreloaderInput_nativeIsLocalPlayerAvailable(
+    JNIEnv *env, jclass clazz) {
+  (void)env;
+  (void)clazz;
+  return pl::runtime::IsLocalPlayerAvailable() ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jfloatArray JNICALL
+Java_org_chimeramc_client_preloader_PreloaderInput_nativeReadLocalPlayerPosition(
+    JNIEnv *env, jclass clazz) {
+  (void)clazz;
+  float position[3] = {0.0f, 0.0f, 0.0f};
+  if (!pl::runtime::ReadLocalPlayerPosition(position)) {
+    return nullptr;
+  }
+  jfloatArray result = env->NewFloatArray(3);
+  if (result != nullptr) {
+    env->SetFloatArrayRegion(result, 0, 3, position);
+  }
+  return result;
+}
+
+JNIEXPORT jfloatArray JNICALL
+Java_org_chimeramc_client_preloader_PreloaderInput_nativeReadLocalPlayerRotation(
+    JNIEnv *env, jclass clazz) {
+  (void)clazz;
+  float rotation[2] = {0.0f, 0.0f};
+  if (!pl::runtime::ReadLocalPlayerRotation(rotation)) {
+    return nullptr;
+  }
+  jfloatArray result = env->NewFloatArray(2);
+  if (result != nullptr) {
+    env->SetFloatArrayRegion(result, 0, 2, rotation);
+  }
+  return result;
 }
 
 } // extern "C"
