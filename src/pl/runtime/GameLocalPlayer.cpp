@@ -36,12 +36,24 @@ constexpr long long kSnapshotFreshMs = 2000;
 void *(*g_origGetLocalPlayer)(void *) = nullptr;
 std::atomic_bool g_hookInstalled{false};
 
+// Byte offset of the local player's health field, configured per game version from the
+// signature rules. Zero means "not configured", and the health read then reports no data
+// rather than reading an unverified offset -- a guessed field could sit at a plausible
+// value and make a highlight fire on its own.
+std::atomic<std::size_t> g_healthOffset{0};
+
 // Seqlock: the game thread writes the snapshot, the Java UI thread reads it, and a torn
 // cross-field read (a new x with an old y) must not be observable.
 std::atomic<std::uint32_t> g_seq{0};
 float g_position[3] = {0.0f, 0.0f, 0.0f};
 float g_rotation[2] = {0.0f, 0.0f};
+float g_health = 0.0f;
+bool g_healthValid = false;
 std::atomic<long long> g_stampMs{0};
+
+// A health reading outside this range is not a real health value; the field was
+// misconfigured, so the sample is treated as "no data".
+constexpr float kMaxPlausibleHealth = 20.0f;
 
 long long MonotonicMs() {
   timespec ts{};
@@ -73,9 +85,24 @@ void PublishSnapshot(const void *localPlayer) {
     return;
   }
 
+  const std::size_t healthOffset = g_healthOffset.load(std::memory_order_relaxed);
+  bool nextHealthValid = false;
+  float nextHealth = 0.0f;
+  if (healthOffset != 0) {
+    const auto *health = reinterpret_cast<const float *>(
+        reinterpret_cast<std::uintptr_t>(localPlayer) + healthOffset);
+    const float value = *health;
+    if (std::isfinite(value) && value >= 0.0f && value <= kMaxPlausibleHealth) {
+      nextHealth = value;
+      nextHealthValid = true;
+    }
+  }
+
   g_seq.fetch_add(1, std::memory_order_acq_rel); // odd: write in progress
   std::memcpy(g_position, nextPosition, sizeof(g_position));
   std::memcpy(g_rotation, nextRotation, sizeof(g_rotation));
+  g_health = nextHealth;
+  g_healthValid = nextHealthValid;
   g_stampMs.store(MonotonicMs(), std::memory_order_relaxed);
   g_seq.fetch_add(1, std::memory_order_release); // even: write complete
 }
@@ -106,6 +133,33 @@ bool ReadSnapshot(float outPosition[3], float outRotation[2]) {
   }
   std::memcpy(outPosition, position, sizeof(position));
   std::memcpy(outRotation, rotation, sizeof(rotation));
+  return true;
+}
+
+// Reads the health half of the snapshot. Kept separate from ReadSnapshot so the
+// position/rotation callers pay no cost for a field they never use, and so a snapshot
+// taken before a health offset was configured reports no health (never a stale value).
+bool ReadHealthSnapshot(float *outHealth) {
+  std::uint32_t s1 = 0;
+  std::uint32_t s2 = 0;
+  float health = 0.0f;
+  bool valid = false;
+  long long stamp = 0;
+  do {
+    s1 = g_seq.load(std::memory_order_acquire);
+    if ((s1 & 1U) != 0U) {
+      return false;
+    }
+    health = g_health;
+    valid = g_healthValid;
+    stamp = g_stampMs.load(std::memory_order_relaxed);
+    s2 = g_seq.load(std::memory_order_acquire);
+  } while (s1 != s2);
+
+  if (!valid || stamp == 0 || MonotonicMs() - stamp > kSnapshotFreshMs) {
+    return false;
+  }
+  *outHealth = health;
   return true;
 }
 
@@ -158,6 +212,14 @@ bool ReadLocalPlayerPosition(float out[3]) {
 bool ReadLocalPlayerRotation(float out[2]) {
   float position[3];
   return ReadSnapshot(position, out);
+}
+
+bool ReadLocalPlayerHealth(float out[1]) {
+  return ReadHealthSnapshot(out);
+}
+
+void SetLocalPlayerHealthOffset(std::size_t offset) {
+  g_healthOffset.store(offset, std::memory_order_relaxed);
 }
 
 } // namespace pl::runtime

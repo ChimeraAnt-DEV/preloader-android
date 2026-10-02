@@ -113,6 +113,13 @@ void InitGameHooks() {
       return;
     }
 
+    // The health offset is independent of the overlay hooks: configure it as soon as the
+    // rules are known, so the Replay death trigger works even when the pause/HUD hooks
+    // cannot be resolved on this build.
+    if (signatures->localPlayerHealthOffset) {
+      pl::runtime::SetLocalPlayerHealthOffset(*signatures->localPlayerHealthOffset);
+    }
+
     std::vector<std::string> requestedSignatures{
         signatures->pauseMenuDtor, signatures->pauseMenuOpen,
         signatures->hudScreenDtor, signatures->hudScreenOpen};

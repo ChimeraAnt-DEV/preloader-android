@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 
 /**
@@ -45,5 +46,28 @@ bool ReadLocalPlayerPosition(float out[3]);
  * @return true when a live rotation was read.
  */
 bool ReadLocalPlayerRotation(float out[2]);
+
+/**
+ * @brief Reads the local player's health.
+ *
+ * Used by the Replay highlight trigger to notice a death without a game event. The
+ * read is fail-closed: with no live local player, or when the field does not hold a
+ * plausible health value (0..20), it reports "no data" so a wrong field cannot be
+ * mistaken for a live player and fire a highlight.
+ *
+ * @param out Receives the health on success; left untouched otherwise.
+ * @return true when a plausible live health was read.
+ */
+bool ReadLocalPlayerHealth(float out[1]);
+
+/**
+ * @brief Configures the byte offset of the local player's health field.
+ *
+ * The offset is version-specific and supplied by the caller from the per-version
+ * signature rules. Zero (the default) leaves the health read reporting "no data".
+ *
+ * @param offset Byte offset from the {@code LocalPlayer} object, or 0 to disable.
+ */
+void SetLocalPlayerHealthOffset(std::size_t offset);
 
 } // namespace pl::runtime

@@ -256,4 +256,19 @@ Java_org_chimeramc_client_preloader_PreloaderInput_nativeReadLocalPlayerRotation
   return result;
 }
 
+JNIEXPORT jfloatArray JNICALL
+Java_org_chimeramc_client_preloader_PreloaderInput_nativeReadLocalPlayerHealth(
+    JNIEnv *env, jclass clazz) {
+  (void)clazz;
+  float health = 0.0f;
+  if (!pl::runtime::ReadLocalPlayerHealth(&health)) {
+    return nullptr;
+  }
+  jfloatArray result = env->NewFloatArray(1);
+  if (result != nullptr) {
+    env->SetFloatArrayRegion(result, 0, 1, &health);
+  }
+  return result;
+}
+
 } // extern "C"

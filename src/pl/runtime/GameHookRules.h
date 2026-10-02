@@ -13,6 +13,7 @@ struct GameHookSignatures {
   std::string hudScreenOpen;
   std::string isShowingMenu;
   std::optional<std::size_t> isShowingMenuVtableIndex;
+  std::optional<std::size_t> localPlayerHealthOffset;
 };
 
 void ConfigureGameHookRules(std::string rulesPath, std::string minecraftVersion);

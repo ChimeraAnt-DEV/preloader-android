@@ -160,6 +160,7 @@ std::optional<GameHookSignatures> ParseHookSignatures(const nlohmann::json &rule
   auto hudScreenOpen = ReadStringField(*sigs, "hudScreenOpenSig");
   auto isShowingMenu = ReadStringField(*sigs, "isShowingMenuSig");
   auto isShowingMenuVtableIndex = ReadSizeField(rule, "isShowingMenuVtableIndex");
+  auto localPlayerHealthOffset = ReadSizeField(rule, "localPlayerHealthOffset");
 
   if (!pauseMenuDtor || !pauseMenuOpen || !hudScreenDtor || !hudScreenOpen ||
       (!isShowingMenu && !isShowingMenuVtableIndex)) {
@@ -173,6 +174,7 @@ std::optional<GameHookSignatures> ParseHookSignatures(const nlohmann::json &rule
       *hudScreenOpen,
       isShowingMenu.value_or(""),
       isShowingMenuVtableIndex,
+      localPlayerHealthOffset,
   };
 }
 
