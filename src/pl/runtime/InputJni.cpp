@@ -7,6 +7,7 @@
 
 #include "pl/runtime/GameHooks.h"
 #include "pl/runtime/GameLocalPlayer.h"
+#include "pl/runtime/GameResourcePackReload.h"
 #include "pl/runtime/InputBridge.h"
 #include "pl/runtime/JavaRuntime.h"
 
@@ -224,6 +225,14 @@ Java_org_chimeramc_client_preloader_PreloaderInput_nativeIsLocalPlayerAvailable(
   (void)env;
   (void)clazz;
   return pl::runtime::IsLocalPlayerAvailable() ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_org_chimeramc_client_preloader_PreloaderInput_nativeReloadResourcePacks(
+    JNIEnv *env, jclass clazz) {
+  (void)env;
+  (void)clazz;
+  return pl::runtime::ReloadResourcePacks() ? JNI_TRUE : JNI_FALSE;
 }
 
 JNIEXPORT jfloatArray JNICALL
