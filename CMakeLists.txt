@@ -44,6 +44,7 @@ set(PRELOADER_SOURCES
         src/pl/runtime/optifine/OptifineRenderDistance.cpp
         src/pl/runtime/optifine/OptifineCallbackTrimming.cpp
         src/pl/runtime/optifine/OptifineOreUiStripping.cpp
+        src/pl/runtime/optifine/OptifineEntityCulling.cpp
         src/pl/runtime/OptifineJni.cpp
         src/pl/runtime/ExternalModBridgeJni.cpp
         src/pl/runtime/AntEggLoader.cpp
