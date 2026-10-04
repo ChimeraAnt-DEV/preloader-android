@@ -7,6 +7,7 @@
 
 #include "pl/runtime/GameHooks.h"
 #include "pl/runtime/GameLocalPlayer.h"
+#include "pl/runtime/GamePlayerRender.h"
 #include "pl/runtime/GameResourcePackReload.h"
 #include "pl/runtime/InputBridge.h"
 #include "pl/runtime/JavaRuntime.h"
@@ -233,6 +234,31 @@ Java_org_chimeramc_client_preloader_PreloaderInput_nativeReloadResourcePacks(
   (void)env;
   (void)clazz;
   return pl::runtime::ReloadResourcePacks() ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_org_chimeramc_client_preloader_PreloaderInput_nativeIsPlayerRenderHookLive(
+    JNIEnv *env, jclass clazz) {
+  (void)env;
+  (void)clazz;
+  return pl::runtime::IsPlayerRenderHookLive() ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jintArray JNICALL
+Java_org_chimeramc_client_preloader_PreloaderInput_nativeReadPlayerRenderStats(
+    JNIEnv *env, jclass clazz) {
+  (void)clazz;
+  std::uint32_t stats[4] = {0, 0, 0, 0};
+  if (!pl::runtime::ReadPlayerRenderStats(stats)) {
+    return nullptr;
+  }
+  jintArray result = env->NewIntArray(4);
+  if (result != nullptr) {
+    jint values[4] = {static_cast<jint>(stats[0]), static_cast<jint>(stats[1]),
+                      static_cast<jint>(stats[2]), static_cast<jint>(stats[3])};
+    env->SetIntArrayRegion(result, 0, 4, values);
+  }
+  return result;
 }
 
 JNIEXPORT jfloatArray JNICALL
