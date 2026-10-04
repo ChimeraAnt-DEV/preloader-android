@@ -234,4 +234,31 @@ std::optional<GameHookSignatures> LoadConfiguredGameHookSignatures() {
   return std::nullopt;
 }
 
+std::size_t ReadConfiguredOptifineSlot(const char *key) {
+  if (key == nullptr || *key == '\0') return 0;
+
+  std::string rulesPath;
+  std::string minecraftVersion;
+  {
+    std::lock_guard<std::mutex> lock(g_rulesMutex);
+    rulesPath = g_rulesPath;
+    minecraftVersion = g_minecraftVersion;
+  }
+
+  auto content = ReadTextFile(rulesPath);
+  if (!content) return 0;
+
+  nlohmann::json root = nlohmann::json::parse(*content, nullptr, false);
+  if (root.is_discarded() || !root.is_object()) return 0;
+
+  auto rulesIt = root.find("rules");
+  if (rulesIt == root.end() || !rulesIt->is_array()) return 0;
+
+  for (const auto &rule : *rulesIt) {
+    if (!rule.is_object() || !RuleMatchesVersion(rule, minecraftVersion)) continue;
+    if (auto slot = ReadSizeField(rule, key)) return *slot;
+  }
+  return 0;
+}
+
 } // namespace pl::runtime

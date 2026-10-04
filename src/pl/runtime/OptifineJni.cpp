@@ -80,4 +80,30 @@ Java_org_chimeramc_client_preloader_PreloaderInput_nativeSetOptifineRefreshTarge
   pl::runtime::SetOptifineRefreshRateTarget(static_cast<int>(hz));
 }
 
+JNIEXPORT void JNICALL
+Java_org_chimeramc_client_preloader_PreloaderInput_nativeConfigureRenderDistance(
+    JNIEnv *env, jclass clazz, jint minDistance, jint maxDistance, jint fpsThreshold) {
+  (void)env;
+  (void)clazz;
+  pl::runtime::ConfigureOptifineRenderDistance(static_cast<int>(minDistance),
+                                               static_cast<int>(maxDistance),
+                                               static_cast<int>(fpsThreshold));
+}
+
+JNIEXPORT jlong JNICALL
+Java_org_chimeramc_client_preloader_PreloaderInput_nativeOptifineTickCount(JNIEnv *env,
+                                                                           jclass clazz) {
+  (void)env;
+  (void)clazz;
+  return static_cast<jlong>(pl::runtime::OptifineTickCount());
+}
+
+JNIEXPORT jlong JNICALL
+Java_org_chimeramc_client_preloader_PreloaderInput_nativeOptifineHudUpdateCount(
+    JNIEnv *env, jclass clazz) {
+  (void)env;
+  (void)clazz;
+  return static_cast<jlong>(pl::runtime::OptifineHudUpdateCount());
+}
+
 } // extern "C"
