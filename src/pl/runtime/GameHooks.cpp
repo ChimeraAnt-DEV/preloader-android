@@ -14,6 +14,7 @@
 #include "pl/memory/Vtable.hpp"
 #include "pl/runtime/GameHookRules.h"
 #include "pl/runtime/GameLocalPlayer.h"
+#include "pl/runtime/GamePlayerRender.h"
 
 namespace pl::runtime {
 namespace {
@@ -112,6 +113,11 @@ void InitGameHooks() {
     if (!signatures) {
       return;
     }
+
+    // The player-render feed is independent of the overlay hooks: the native cosmetics path
+    // uses it to know the renderer is live and to drive its physics off a real render tick. It
+    // is fail-closed, so a build where the slot does not resolve simply keeps the pack path.
+    InitPlayerRenderSource(signatures->playerRenderVtableIndex.value_or(0));
 
     std::vector<std::string> requestedSignatures{
         signatures->pauseMenuDtor, signatures->pauseMenuOpen,
