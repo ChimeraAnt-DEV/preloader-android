@@ -14,6 +14,7 @@
 #include "pl/memory/Vtable.hpp"
 #include "pl/runtime/GameHookRules.h"
 #include "pl/runtime/GameLocalPlayer.h"
+#include "pl/runtime/GamePlayerRender.h"
 
 namespace pl::runtime {
 namespace {
@@ -112,6 +113,11 @@ void InitGameHooks() {
     if (!signatures) {
       return;
     }
+
+    // The player-render feed is likewise independent: the native cosmetics path uses it to
+    // know the renderer is live and to drive its physics off a real render tick. It is
+    // fail-closed, so a build where the slot does not resolve simply keeps the pack path.
+    InitPlayerRenderSource(signatures->playerRenderVtableIndex.value_or(0));
 
     // The health offset is independent of the overlay hooks: configure it as soon as the
     // rules are known, so the Replay death trigger works even when the pause/HUD hooks

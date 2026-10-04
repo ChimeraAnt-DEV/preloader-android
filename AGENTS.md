@@ -31,6 +31,25 @@
   Fail-closed: no hook / no world reads as "no data". Field offsets `Actor+0x230`
   (position) and `Actor+0x238` (rotation) are shared across the targeted builds.
 
+## Player-render hook (`GamePlayerRender`)
+- **Hook point: `LivePlayerRenderer::render`, primary-vtable slot 17**, resolved by RTTI name
+  (`resolveVtableFunction("18LivePlayerRenderer", 17, "libminecraftpe.so")`). No per-build code
+  address is baked in; the slot index is overridable from the signature rules
+  (`playerRenderVtableIndex`), default 17. See `docs/player-render-hook.md` for the full finding
+  and the identification method (RTTI name → vtable dump → per-slot string scan: slot 17 is the
+  only slot referencing `variable.player_x_rotation` / `is_first_person` / `is_using_vr`).
+- **The detour is a pure passthrough.** The game strips symbols, so the render entry's C++
+  signature is not recoverable; the hook forwards `x0..x7` unchanged and dereferences nothing.
+  That is what makes an unknown ABI safe — a wrong signature cannot read freed memory or corrupt
+  a return value because no argument is ever touched.
+- **What it provides:** `IsPlayerRenderHookLive()` and `ReadPlayerRenderStats()` →
+  `{renderTick, callsThisFrame, totalCalls, msSinceLastRender}`. The renderer runs once per
+  rendered player, so `callsThisFrame > 1` is direct evidence it covers non-local players too.
+  The render tick is the per-frame clock the launcher's native cape/pet physics advance on.
+- **Fail-closed:** unresolved slot / failed install / renderer never ran → the launcher keeps the
+  resource-pack path. Never crashes, never partially renders. Runtime-detected, no version
+  allowlist.
+
 ## Live resource-pack reload (`GameResourcePackReload`)
 - `nativeReloadResourcePacks()` / `pl::runtime::ReloadResourcePacks()` is a **fail-safe
   research seam**, not a working live reload. Reverse-engineering of
