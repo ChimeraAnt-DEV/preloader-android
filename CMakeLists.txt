@@ -31,6 +31,22 @@ set(PRELOADER_SOURCES
         src/pl/runtime/GameLocalPlayer.cpp
         src/pl/runtime/GamePlayerRender.cpp
         src/pl/runtime/GameResourcePackReload.cpp
+        src/pl/runtime/OptifineConfig.cpp
+        src/pl/runtime/OptifineMode.cpp
+        src/pl/runtime/optifine/OptifineAllocator.cpp
+        src/pl/runtime/optifine/OptifineDeviceRules.cpp
+        src/pl/runtime/optifine/OptifineProcess.cpp
+        src/pl/runtime/optifine/OptifineRenderPriority.cpp
+        src/pl/runtime/optifine/OptifineCpuAffinity.cpp
+        src/pl/runtime/optifine/OptifineRefreshRate.cpp
+        src/pl/runtime/optifine/OptifineGovernor.cpp
+        src/pl/runtime/optifine/OptifineHookSupport.cpp
+        src/pl/runtime/optifine/OptifineRenderDistance.cpp
+        src/pl/runtime/optifine/OptifineCallbackTrimming.cpp
+        src/pl/runtime/optifine/OptifineOreUiStripping.cpp
+        src/pl/runtime/optifine/OptifineEntityCulling.cpp
+        src/pl/runtime/optifine/OptifineParticleCulling.cpp
+        src/pl/runtime/OptifineJni.cpp
         src/pl/runtime/ExternalModBridgeJni.cpp
         src/pl/runtime/AntEggLoader.cpp
         src/pl/runtime/AntEggJni.cpp
@@ -78,15 +94,29 @@ FetchContent_Declare(
         GIT_TAG v3.5.0
         EXCLUDE_FROM_ALL
 )
+# mimalloc backs the Tier-1 allocator interposition. Pinned by tag so a moving upstream
+# cannot silently change the allocator under the game. MI_BUILD_* trims the static build to
+# just the allocator (no docs/tests/tools) so it links into libpreloader without pulling in
+# CMake install rules.
+FetchContent_Declare(
+        mimalloc
+        GIT_REPOSITORY https://github.com/microsoft/mimalloc.git
+        GIT_TAG v2.1.7
+)
 set(FMT_DOC OFF CACHE BOOL "Disable fmt docs" FORCE)
 set(FMT_TEST OFF CACHE BOOL "Disable fmt tests" FORCE)
 set(FMT_INSTALL OFF CACHE BOOL "Disable fmt install rules" FORCE)
 set(LUNASVG_BUILD_EXAMPLES OFF CACHE BOOL "Disable lunasvg examples" FORCE)
 set(LUNASVG_DISABLE_LOAD_SYSTEM_FONTS ON CACHE BOOL "Disable lunasvg system font scan" FORCE)
+set(MI_BUILD_SHARED OFF CACHE BOOL "Static mimalloc" FORCE)
+set(MI_BUILD_OBJECT OFF CACHE BOOL "mimalloc as a normal static lib" FORCE)
+set(MI_BUILD_TESTS OFF CACHE BOOL "Disable mimalloc tests" FORCE)
+set(MI_BUILD_STRICT OFF CACHE BOOL "Relax mimalloc warnings" FORCE)
+set(MI_OVERRIDE OFF CACHE BOOL "mimalloc must not override malloc itself" FORCE)
 
 set(_preloader_build_shared_libs ${BUILD_SHARED_LIBS})
 set(BUILD_SHARED_LIBS OFF)
-FetchContent_MakeAvailable(nlohmann_json boost_pfr magic_enum fmt lunasvg)
+FetchContent_MakeAvailable(nlohmann_json boost_pfr magic_enum fmt lunasvg mimalloc)
 set(BUILD_SHARED_LIBS ${_preloader_build_shared_libs})
 
 find_library(log-lib log REQUIRED)
@@ -124,6 +154,7 @@ target_link_libraries(preloader
         Boost::pfr
         magic_enum::magic_enum
         lunasvg::lunasvg
+        mimalloc-static
 )
 
 install(TARGETS preloader
