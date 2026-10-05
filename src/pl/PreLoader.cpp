@@ -89,8 +89,14 @@ Java_org_chimeramc_client_core_mods_ModManager_nativeDisableAndUnloadLoadedMods(
   ModManager::DisableAndUnloadLoadedMods();
 }
 
+// The JNI symbol for nativeSetupRuntime must match the declaring class exactly. The Java
+// declaration lives in org.levimc.launcher.core.minecraft.MinecraftRuntimePreparer (a retained
+// bridge: the prebuilt libgxcore.so hardcodes the levimc path in its own lookup), so the
+// exported name is the levimc one. An earlier rebrand renamed this symbol to the chimeramc
+// path, which left no class declaring it -- a dead symbol and an UnsatisfiedLinkError on every
+// launch. Keep it levimc; the chimeramc package is the host, not the declaration.
 JNIEXPORT void JNICALL
-Java_org_chimeramc_client_core_minecraft_MinecraftRuntimePreparer_nativeSetupRuntime(
+Java_org_levimc_launcher_core_minecraft_MinecraftRuntimePreparer_nativeSetupRuntime(
     JNIEnv *env, jclass clazz, jstring modsPath) {
   (void)clazz;
   if (!modsPath) {
@@ -104,6 +110,18 @@ Java_org_chimeramc_client_core_minecraft_MinecraftRuntimePreparer_nativeSetupRun
 
   preloaderLogger.debug("Native runtime mod directory: {}", path);
   env->ReleaseStringUTFChars(modsPath, path);
+}
+
+// Fail-safe health read for the replay death trigger. This build has no verified health field
+// offset, so it reports "no data" (null) rather than inventing a reading -- the caller's
+// DeathWatcher treats null as unavailable and never fires a highlight from it. The signature is
+// float[] and it is read on the UI thread, so it must not throw or block.
+JNIEXPORT jfloatArray JNICALL
+Java_org_chimeramc_client_preloader_PreloaderInput_nativeReadLocalPlayerHealth(
+    JNIEnv *env, jclass clazz) {
+  (void)env;
+  (void)clazz;
+  return nullptr;
 }
 
 } // extern "C"
