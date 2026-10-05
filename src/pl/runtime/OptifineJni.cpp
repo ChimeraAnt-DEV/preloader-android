@@ -61,7 +61,18 @@ JNIEXPORT jobjectArray JNICALL
 Java_org_chimeramc_client_preloader_PreloaderInput_nativeReadOptifineState(
     JNIEnv *env, jclass clazz) {
   (void)clazz;
-  return ToStateArray(env, pl::runtime::ReadOptifineState());
+  // The read is guarded, but a miss still reaches here as a null return and the caller's
+  // for-each would NPE. Return an empty array (not null) so the Settings UI renders with
+  // defaults even if the native state has not been populated yet.
+  jobjectArray state = ToStateArray(env, pl::runtime::ReadOptifineState());
+  if (state != nullptr) {
+    return state;
+  }
+  const jclass stringClass = env->FindClass("java/lang/String");
+  if (stringClass == nullptr) {
+    return nullptr;
+  }
+  return env->NewObjectArray(0, stringClass, nullptr);
 }
 
 JNIEXPORT jboolean JNICALL
