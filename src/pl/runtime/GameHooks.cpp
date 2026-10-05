@@ -105,6 +105,18 @@ void ConfigureGameHooks(std::string rulesPath, std::string minecraftVersion) {
 void InitGameHooks() {
   std::call_once(g_gameHooksOnce, [] {
     g_forceGlobalModMenu.store(false, std::memory_order_relaxed);
+    // Hard guard: never install a detour against an unresolved address. When the launcher has
+    // not delivered the signature rules -- the library was loaded after the rules call, a stale
+    // build, or a different process -- there is no verified target, and installing anyway faults
+    // on the render thread (SIGSEGV right after "Start hook linker"). Fail safe to a vanilla
+    // launch instead. This is checked before every hook below, including the local-player feed.
+    if (!GameHookRulesConfigured()) {
+      preloaderLogger.warn(
+          "Preloader signature rules were not delivered; refusing to install hooks and "
+          "launching vanilla");
+      return;
+    }
+
     // The local-player feed is independent of the pause/HUD hooks and is useful on
     // its own (the voice nametag icons), so it is installed even when the overlay
     // hooks below cannot be resolved.
