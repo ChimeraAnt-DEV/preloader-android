@@ -294,4 +294,9 @@ bool MatchesConfiguredVersion(const std::string &minVersion,
   return true;
 }
 
+bool GameHookRulesConfigured() {
+  std::lock_guard<std::mutex> lock(g_rulesMutex);
+  return !g_rulesPath.empty();
+}
+
 } // namespace pl::runtime
