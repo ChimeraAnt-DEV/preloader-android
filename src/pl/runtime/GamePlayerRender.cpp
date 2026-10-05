@@ -7,6 +7,7 @@
 #include "pl/Logger.hpp"
 #include "pl/memory/Hook.hpp"
 #include "pl/memory/Vtable.hpp"
+#include "pl/runtime/GameHookRules.h"
 
 namespace pl::runtime {
 namespace {
@@ -19,6 +20,15 @@ constexpr const char *kGameModule = "libminecraftpe.so";
 // i.e. the routine that poses and draws the player model. The index is overridable from
 // the per-version signature rules; the RTTI name resolution means no code address is baked in.
 constexpr std::size_t kDefaultRenderSlot = 17;
+
+// The slot index was verified only against the 1.26.60.x builds. On any other build the RTTI
+// name still resolves to a real function, so a stale index yields a valid-but-unrelated
+// address, and hooking it detours whatever that slot happens to be -- a fault on the render
+// thread (the crash right after "Start hook linker"). The hook therefore installs only inside
+// this verified range; widen it only after confirming the slot against the build, and keep the
+// bundled signature rules in step.
+constexpr const char *kVerifiedMinVersion = "1.26.60.00";
+constexpr const char *kVerifiedMaxVersion = "1.26.61.00";
 
 // Passthrough hook arity. The exact C++ signature of the render entry is not known (the
 // game strips its symbols), so the detour forwards the full integer argument register set
@@ -67,6 +77,16 @@ void HookRender(void *a, void *b, void *c, void *d, void *e, void *f, void *g, v
 
 void InitPlayerRenderSource(std::size_t vtableIndex) {
   if (g_hookInstalled.exchange(true, std::memory_order_relaxed)) {
+    return;
+  }
+
+  // Only the builds whose slot index is verified may be hooked. An unverified build fails safe
+  // to the resource-pack path rather than installing a detour on an unrelated slot.
+  if (!MatchesConfiguredVersion(kVerifiedMinVersion, kVerifiedMaxVersion)) {
+    preloaderLogger.warn(
+        "Player-render feed: running build is outside the verified range {}-{}; native "
+        "cosmetics stay on the resource-pack path",
+        kVerifiedMinVersion, kVerifiedMaxVersion);
     return;
   }
 

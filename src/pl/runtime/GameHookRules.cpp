@@ -111,9 +111,22 @@ std::vector<int> ParseVersionParts(std::string_view value) {
   return parts;
 }
 
+// Drops a leading 1. so a two-component version code ("26.52") compares equal to the
+// three-component form the rules use ("1.26.50.00"). Bedrock 1.26.x is the same build as
+// 26.x, and the launcher derives the code from the APK as "26.52" while the bundled rules
+// are written as "1.26.50.00"; without this every range comparison is off by the major part
+// (26 > 1), so a rule that should match is skipped and one that should not may be applied.
+std::vector<int> NormalizeVersionParts(std::string_view value) {
+  auto parts = ParseVersionParts(value);
+  if (!parts.empty() && parts.front() == 1) {
+    parts.erase(parts.begin());
+  }
+  return parts;
+}
+
 int CompareVersions(std::string_view left, std::string_view right) {
-  const auto leftParts = ParseVersionParts(left);
-  const auto rightParts = ParseVersionParts(right);
+  const auto leftParts = NormalizeVersionParts(left);
+  const auto rightParts = NormalizeVersionParts(right);
   const size_t count = std::max(leftParts.size(), rightParts.size());
 
   for (size_t i = 0; i < count; ++i) {
@@ -259,6 +272,26 @@ std::size_t ReadConfiguredOptifineSlot(const char *key) {
     if (auto slot = ReadSizeField(rule, key)) return *slot;
   }
   return 0;
+}
+
+bool MatchesConfiguredVersion(const std::string &minVersion,
+                              const std::string &maxVersion) {
+  std::string minecraftVersion;
+  {
+    std::lock_guard<std::mutex> lock(g_rulesMutex);
+    minecraftVersion = g_minecraftVersion;
+  }
+
+  if (minecraftVersion.empty()) {
+    return false;
+  }
+  if (!minVersion.empty() && CompareVersions(minecraftVersion, minVersion) < 0) {
+    return false;
+  }
+  if (!maxVersion.empty() && CompareVersions(minecraftVersion, maxVersion) > 0) {
+    return false;
+  }
+  return true;
 }
 
 } // namespace pl::runtime

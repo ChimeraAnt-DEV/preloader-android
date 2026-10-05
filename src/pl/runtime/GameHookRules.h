@@ -32,4 +32,18 @@ std::optional<GameHookSignatures> LoadConfiguredGameHookSignatures();
  */
 std::size_t ReadConfiguredOptifineSlot(const char *key);
 
+/**
+ * @brief Reports whether the running Minecraft version falls within a verified range.
+ *
+ * A hook whose target was only confirmed against specific builds must not be installed on an
+ * unverified one: an RTTI name resolves to a real function on every build, so a wrong vtable
+ * index yields a valid-but-unrelated address, and hooking it detours whatever that slot happens
+ * to be. The cosmetics player-render hook uses this to stay off on builds whose slot index has
+ * not been verified. Comparison is numeric and component-wise, so a leading {@code 1.} and a
+ * channel suffix do not affect it. An empty bound means "unbounded on that side"; an empty
+ * running version never matches a bounded range.
+ */
+bool MatchesConfiguredVersion(const std::string &minVersion,
+                              const std::string &maxVersion);
+
 } // namespace pl::runtime
