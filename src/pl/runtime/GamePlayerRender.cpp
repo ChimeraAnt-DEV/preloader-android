@@ -103,7 +103,9 @@ void InitPlayerRenderSource(std::size_t vtableIndex) {
 
   if (pl::memory::hook(reinterpret_cast<pl::memory::FuncPtr>(renderFn),
                        reinterpret_cast<pl::memory::FuncPtr>(HookRender),
-                       reinterpret_cast<pl::memory::FuncPtr *>(&g_origRender)) != 0) {
+                       reinterpret_cast<pl::memory::FuncPtr *>(&g_origRender),
+                       pl::memory::HookPriority::Normal,
+                       "LivePlayerRenderer::render") != 0) {
     preloaderLogger.warn(
         "Player-render feed: hook install failed; native cosmetics stay on the "
         "resource-pack path");

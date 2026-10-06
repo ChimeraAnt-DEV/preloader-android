@@ -23,6 +23,7 @@ set(PRELOADER_SOURCES
         src/pl/legacy/LegacyPatch.cpp
         src/pl/legacy/LegacySignature.cpp
         src/pl/memory/Hook.cpp
+        src/pl/memory/HookTarget.cpp
         src/pl/memory/Patch.cpp
         src/pl/memory/Signature.cpp
         src/pl/memory/Vtable.cpp

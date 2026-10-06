@@ -6,6 +6,7 @@
 #include <string>
 
 #include "pl/Gloss.h"
+#include "pl/Logger.hpp"
 
 namespace pl::memory {
 namespace {
@@ -13,7 +14,11 @@ namespace {
 std::once_flag glossInitOnce;
 
 void ensureGlossInitialized() {
-  std::call_once(glossInitOnce, [] { GlossInit(true); });
+  // GlossInit(false) is the trampoline/bookkeeping init and is all the RTTI scan and the
+  // inline hook need. GlossInit(true) additionally runs LinkerInit(), which re-hooks the
+  // Android linker's own do_dlopen/do_dlsym via an inline hook; on this build that faults
+  // (the "Start hook linker..." -> SIGSEGV sequence) and it is not needed here.
+  std::call_once(glossInitOnce, [] { GlossInit(false); });
 }
 
 std::string_view normalizeTypeInfoName(std::string_view typeInfoName) {
@@ -172,10 +177,16 @@ uintptr_t resolveVtableFunction(std::string_view typeInfoName, size_t slot,
 
   const uintptr_t typeInfo = findTypeInfo(dataRelRo, dataRelRoSize, typeName);
   if (!typeInfo) {
+    preloaderLogger.debug("resolveVtableFunction({}, slot {}): typeinfo not found in {}",
+                          normalizedName, slot, module);
     return 0;
   }
 
-  return findPrimaryVtableSlot(dataRelRo, dataRelRoSize, typeInfo, slot);
+  const uintptr_t resolved =
+      findPrimaryVtableSlot(dataRelRo, dataRelRoSize, typeInfo, slot);
+  preloaderLogger.debug("resolveVtableFunction({}, slot {}) -> {:#x} in {}",
+                        normalizedName, slot, resolved, module);
+  return resolved;
 }
 
 } // namespace pl::memory

@@ -139,7 +139,9 @@ void InitLocalPlayerSource() {
   if (pl::memory::hook(reinterpret_cast<pl::memory::FuncPtr>(slot),
                        reinterpret_cast<pl::memory::FuncPtr>(HookGetLocalPlayer),
                        reinterpret_cast<pl::memory::FuncPtr *>(
-                           &g_origGetLocalPlayer)) != 0) {
+                           &g_origGetLocalPlayer),
+                       pl::memory::HookPriority::Normal,
+                       "ClientInstance::getLocalPlayer") != 0) {
     preloaderLogger.warn("Local-player feed: hook install failed; icons stay off");
   }
 }

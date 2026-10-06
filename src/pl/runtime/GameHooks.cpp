@@ -88,9 +88,39 @@ bool InstallHook(uintptr_t target, pl::memory::FuncPtr detour,
   }
 
   if (pl::memory::hook(reinterpret_cast<pl::memory::FuncPtr>(target), detour,
-                       original) != 0) {
+                       original, pl::memory::HookPriority::Normal, name) != 0) {
     preloaderLogger.warn("Failed to install Preloader hook: {}", name);
     return false;
+  }
+  return true;
+}
+
+// One hook in a batch. Kept together with its rollback inputs so an install that
+// fails part-way can be fully undone instead of leaving the process half-patched.
+struct PendingHook {
+  uintptr_t target;
+  pl::memory::FuncPtr detour;
+  pl::memory::FuncPtr *original;
+  const char *name;
+};
+
+bool InstallHookBatch(const std::vector<PendingHook> &batch) {
+  std::vector<const PendingHook *> installed;
+  installed.reserve(batch.size());
+
+  for (const auto &h : batch) {
+    if (!InstallHook(h.target, h.detour, h.original, h.name)) {
+      preloaderLogger.error(
+          "Preloader hook install aborted at '{}'; rolling back {} hook(s) already "
+          "installed",
+          h.name, installed.size());
+      for (const auto *done : installed) {
+        pl::memory::unhook(reinterpret_cast<pl::memory::FuncPtr>(done->target),
+                           done->detour);
+      }
+      return false;
+    }
+    installed.push_back(&h);
   }
   return true;
 }
@@ -160,34 +190,28 @@ void InitGameHooks() {
       return;
     }
 
-    bool hooksReady = true;
-    hooksReady &= InstallHook(pauseDtor,
-                              (pl::memory::FuncPtr)hook_PauseMenuDtor,
-                              (pl::memory::FuncPtr *)&orig_PauseMenuDtor,
-                              "PauseMenuDtor");
-    hooksReady &= InstallHook(pauseOpen,
-                              (pl::memory::FuncPtr)hook_PauseMenuOpen,
-                              (pl::memory::FuncPtr *)&orig_PauseMenuOpen,
-                              "PauseMenuOpen");
-    hooksReady &= InstallHook(hudDtor,
-                              (pl::memory::FuncPtr)hook_HudScreenDtor,
-                              (pl::memory::FuncPtr *)&orig_HudScreenDtor,
-                              "HudScreenDtor");
-    hooksReady &= InstallHook(hudOpen,
-                              (pl::memory::FuncPtr)hook_HudScreenOpen,
-                              (pl::memory::FuncPtr *)&orig_HudScreenOpen,
-                              "HudScreenOpen");
-    hooksReady &= InstallHook(isShowingMenuAddr,
-                              (pl::memory::FuncPtr)hook_isShowingMenu,
-                              (pl::memory::FuncPtr *)&orig_isShowingMenu,
-                              "isShowingMenu");
+    // Install the overlay hooks as one atomic batch: abort on the first failure, roll
+    // back the hooks already installed, and never leave the process half-patched.
+    const std::vector<PendingHook> overlayHooks{
+        {pauseDtor, (pl::memory::FuncPtr)hook_PauseMenuDtor,
+         (pl::memory::FuncPtr *)&orig_PauseMenuDtor, "PauseMenuDtor"},
+        {pauseOpen, (pl::memory::FuncPtr)hook_PauseMenuOpen,
+         (pl::memory::FuncPtr *)&orig_PauseMenuOpen, "PauseMenuOpen"},
+        {hudDtor, (pl::memory::FuncPtr)hook_HudScreenDtor,
+         (pl::memory::FuncPtr *)&orig_HudScreenDtor, "HudScreenDtor"},
+        {hudOpen, (pl::memory::FuncPtr)hook_HudScreenOpen,
+         (pl::memory::FuncPtr *)&orig_HudScreenOpen, "HudScreenOpen"},
+        {isShowingMenuAddr, (pl::memory::FuncPtr)hook_isShowingMenu,
+         (pl::memory::FuncPtr *)&orig_isShowingMenu, "isShowingMenu"},
+    };
 
-    if (!hooksReady) {
+    if (!InstallHookBatch(overlayHooks)) {
       preloaderLogger.warn(
           "Preloader runtime hooks are incomplete; game-only overlays remain hidden");
       return;
     }
 
+    preloaderLogger.info("Preloader runtime hooks installed (5/5)");
   });
 }
 

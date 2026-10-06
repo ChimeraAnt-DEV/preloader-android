@@ -41,9 +41,11 @@ std::uintptr_t ResolveOptifineSlot(const char *typeInfoName, std::size_t slot);
  * @param slotAddress the address from {@link ResolveOptifineSlot}.
  * @param detour the detour function.
  * @param original receives the trampoline to the original.
+ * @param label short name used in the install log.
  * @return true when the hook installed.
  */
-bool InstallOptifineHook(std::uintptr_t slotAddress, void *detour, void **original);
+bool InstallOptifineHook(std::uintptr_t slotAddress, void *detour, void **original,
+                         const char *label);
 
 /**
  * @brief A reusable Tier-2 hook: resolve a vtable slot by RTTI name, install a passthrough

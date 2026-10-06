@@ -12,10 +12,13 @@ std::uintptr_t ResolveOptifineSlot(const char *typeInfoName, std::size_t slot) {
   return pl::memory::resolveVtableFunction(typeInfoName, slot, kOptifineGameModule);
 }
 
-bool InstallOptifineHook(std::uintptr_t slotAddress, void *detour, void **original) {
+bool InstallOptifineHook(std::uintptr_t slotAddress, void *detour, void **original,
+                         const char *label) {
   if (slotAddress == 0 || detour == nullptr || original == nullptr) return false;
   return pl::memory::hook(reinterpret_cast<pl::memory::FuncPtr>(slotAddress), detour,
-                          reinterpret_cast<pl::memory::FuncPtr *>(original)) == 0;
+                          reinterpret_cast<pl::memory::FuncPtr *>(original),
+                          pl::memory::HookPriority::Normal,
+                          label == nullptr ? "optifine" : label) == 0;
 }
 
 bool InstallTier2CountingHook(const char *typeInfoName, std::size_t slot,
@@ -45,7 +48,7 @@ bool InstallTier2CountingHook(const char *typeInfoName, std::size_t slot,
     return false;
   }
 
-  if (!InstallOptifineHook(address, detour, original)) {
+  if (!InstallOptifineHook(address, detour, original, label)) {
     MarkOptifineFailed(state, std::string(label) + ": hook install failed");
     preloaderLogger.warn("Optifine {}: detour install failed at 0x{:x}", label, address);
     return false;
