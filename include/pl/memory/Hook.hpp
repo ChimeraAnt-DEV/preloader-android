@@ -5,6 +5,7 @@
  * @brief Memory hook API.
  */
 
+#include <string_view>
 #include <utility>
 
 #include "pl/Export.hpp"
@@ -26,9 +27,13 @@ enum class HookPriority : int {
 
 /**
  * @brief Installs a detour for a target function.
+ *
+ * @param name Diagnostic label used in log lines (e.g. "PauseMenuOpen"). May be empty.
+ * @return 0 on success, -1 on a failed/refused install.
  */
 PL_EXPORT int hook(FuncPtr target, FuncPtr detour, FuncPtr *originalFunc,
-                   HookPriority priority = HookPriority::Normal);
+                   HookPriority priority = HookPriority::Normal,
+                   std::string_view name = {});
 
 /**
  * @brief Removes a detour from a target function.
