@@ -29,6 +29,8 @@ set(PRELOADER_SOURCES
         src/pl/memory/Vtable.cpp
         src/pl/runtime/GameHookRules.cpp
         src/pl/runtime/GameHooks.cpp
+        src/pl/runtime/GameCosmetics.cpp
+        src/pl/runtime/GameCosmeticsJni.cpp
         src/pl/runtime/GameLocalPlayer.cpp
         src/pl/runtime/GamePlayerRender.cpp
         src/pl/runtime/GameResourcePackReload.cpp

@@ -13,6 +13,7 @@
 #include "pl/memory/Signature.hpp"
 #include "pl/memory/Vtable.hpp"
 #include "pl/runtime/GameHookRules.h"
+#include "pl/runtime/GameCosmetics.h"
 #include "pl/runtime/GameLocalPlayer.h"
 #include "pl/runtime/GamePlayerRender.h"
 
@@ -160,6 +161,10 @@ void InitGameHooks() {
     // uses it to know the renderer is live and to drive its physics off a real render tick. It
     // is fail-closed, so a build where the slot does not resolve simply keeps the pack path.
     InitPlayerRenderSource(signatures->playerRenderVtableIndex.value_or(0));
+
+    // The native cosmetics seams (skin/cape retrieval and the texture binder). Like the render
+    // feed they are fail-closed: a build whose slot does not resolve keeps the resource-pack path.
+    InitCosmeticsHooks(0, 0, 0);
 
     std::vector<std::string> requestedSignatures{
         signatures->pauseMenuDtor, signatures->pauseMenuOpen,
