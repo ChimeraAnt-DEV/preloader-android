@@ -22,13 +22,29 @@ constexpr const char *kGameModule = "libminecraftpe.so";
 // around; a build that reorders them reports "unresolved" and stays on the resource-pack path.
 // Overridable from the per-version signature rules, which is what makes this runtime-detected
 // rather than an allowlist.
-constexpr std::size_t kDefaultSkinCapeSlot = 0;
+// Slots verified against the shipped 1.26.60.28 arm64-v8a binary:
+//   LivePlayerRenderer vtable address point 0x15144a78, slot 17 -> 0xaeaefb4 (the render entry;
+//   the same slot the player-render feed already uses), and
+//   ClientNetworkHandler vtable address point 0x1520ef98, slot 40 -> 0xb80f518 (the
+//   AddPlayerPacket handler, whose body references the "AddPlayerPacket: NaN position" diagnostic).
+//
+// A Skin object is not polymorphic (no RTTI name exists for it), so there is no reachable
+// "Skin::getCapeImage" vtable; the renderer that holds the skin is the honest seam for the 2D
+// cape, which is why the skin/cape slot is the renderer's render entry. The SerializedSkinRef
+// cape accessors (getCapeImageData / getCapeImageDataCereal) exist but are plain methods on a
+// non-virtual type, so they cannot be reached by slot.
+constexpr std::size_t kDefaultSkinCapeSlot = 17;
+constexpr std::size_t kDefaultPacketReadSlot = 40;
+// No texture-binder slot is verified for this build, so the texture seam stays fail-closed (0):
+// it is installed only when a per-version rule supplies a confirmed index.
 constexpr std::size_t kDefaultTextureBindSlot = 0;
-constexpr std::size_t kDefaultPacketReadSlot = 0;
 
-// The Skin type's RTTI name. The game strips method symbols, so the type is located by name and
-// the slot is read from its vtable; no per-build code address is baked in.
-constexpr const char *kSkinTypeName = "4Skin";
+// Real RTTI type names, present as standalone typeinfo-name strings in the binary.
+constexpr const char *kSkinTypeName = "18LivePlayerRenderer";
+constexpr const char *kPacketHandlerTypeName = "20ClientNetworkHandler";
+// The texture-atlas type (a real typeinfo-name string in this binary). Named for the
+// rule-driven path only; with no verified slot the hook is not installed.
+constexpr const char *kTextureTypeName = "12TextureAtlas";
 
 std::atomic<std::uint32_t> g_skinCapeCalls{0};
 std::atomic<std::uint32_t> g_textureCalls{0};
@@ -36,11 +52,6 @@ std::atomic<std::uint32_t> g_packetCalls{0};
 std::atomic_bool g_skinHookInstalled{false};
 std::atomic_bool g_textureHookInstalled{false};
 std::atomic_bool g_packetHookInstalled{false};
-
-// The network-handler type whose read entry carries the join packets. Located by RTTI name like
-// the others; the packet (PlayerListPacket / AddPlayerPacket) is where a remote player's skin
-// arrives, so this is the seam a cosmetic would be substituted into before the engine uploads it.
-constexpr const char *kPacketHandlerTypeName = "21ClientNetworkHandler";
 
 // The registry. Guarded by one mutex: writes come from the launcher thread (JNI), reads from the
 // game thread, and both are coarse (a set on cosmetic change, a lookup on a hook that may not be
@@ -247,7 +258,7 @@ void InitCosmeticsHooks(std::size_t skinCapeVtableIndex, std::size_t textureBind
 
   InstallSlotHook(kSkinTypeName, skinSlot, HookSkinCape, &g_origSkinCape,
                   g_skinHookInstalled, "skin/cape");
-  InstallSlotHook(kSkinTypeName, textureSlot, HookTextureBind, &g_origTextureBind,
+  InstallSlotHook(kTextureTypeName, textureSlot, HookTextureBind, &g_origTextureBind,
                   g_textureHookInstalled, "texture-bind");
   InstallSlotHook(kPacketHandlerTypeName, packetSlot, HookPacketRead, &g_origPacketRead,
                   g_packetHookInstalled, "player-join-packet");
