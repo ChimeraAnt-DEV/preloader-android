@@ -9,6 +9,7 @@
 
 #include "pl/Logger.hpp"
 #include "pl/memory/Hook.hpp"
+#include "pl/memory/Signature.hpp"
 #include "pl/memory/Vtable.hpp"
 #include "pl/runtime/GameHookRules.h"
 
@@ -169,6 +170,40 @@ std::size_t PacketReadSlotFromRules() {
   return ReadConfiguredOptifineSlot("packetReadVtableIndex");
 }
 
+// The engine image loader, resolved once from its byte signature. The class exports no symbol, so a
+// pattern match is the only handle; a build whose pattern is absent leaves this 0 and the
+// cosmetics path stays on the resource pack.
+std::atomic<std::uintptr_t> g_imageLoader{0};
+std::atomic_bool g_imageLoaderResolved{false};
+
+std::uintptr_t ResolveImageLoader() {
+  if (g_imageLoaderResolved.load(std::memory_order_relaxed)) {
+    return g_imageLoader.load(std::memory_order_relaxed);
+  }
+  g_imageLoaderResolved.store(true, std::memory_order_relaxed);
+  if (!GameHookRulesConfigured()) return 0;
+  auto signatures = LoadConfiguredGameHookSignatures();
+  if (!signatures || signatures->imageLoaderSig.empty()) return 0;
+  std::vector<std::string> patterns{signatures->imageLoaderSig};
+  auto results = pl::memory::resolveSignatures(patterns, kGameModule);
+  auto it = results.find(signatures->imageLoaderSig);
+  std::uintptr_t address = it == results.end() ? 0 : it->second;
+  g_imageLoader.store(address, std::memory_order_relaxed);
+  if (address) {
+    preloaderLogger.info("Cosmetics image loader: mce::ImageUtils::loadImageFromMemory resolved");
+  } else {
+    preloaderLogger.warn(
+        "Cosmetics image loader: signature did not match; the pack path stays in use");
+  }
+  return address;
+}
+
+// The recovered ABI: loadImageFromMemory(mce::Image &out, ImageFormat, const unsigned char *,
+// size_t, bool) returns brstd::expected<void, error_condition> via the hidden sret pointer in x8.
+// We pass a small buffer for that return and read its payload byte.
+using LoadImageFn = void (*)(void *sret, void *imageOut, std::uint32_t format,
+                             const std::uint8_t *data, std::size_t size, bool flag);
+
 } // namespace
 
 void SetCapeOverride(std::uint64_t playerKey, const std::uint8_t *rgba,
@@ -266,6 +301,24 @@ void InitCosmeticsHooks(std::size_t skinCapeVtableIndex, std::size_t textureBind
 
 bool IsPacketHookLive() {
   return g_packetCalls.load(std::memory_order_relaxed) != 0;
+}
+
+std::uintptr_t ImageLoaderAddress() {
+  return ResolveImageLoader();
+}
+
+bool BuildCapeImageFromPng(const std::uint8_t *png, std::size_t size, void *outImage) {
+  if (png == nullptr || size == 0 || outImage == nullptr) return false;
+  const std::uintptr_t loader = ResolveImageLoader();
+  if (loader == 0) return false;
+
+  // brstd::expected<void, error_condition> is delivered through the hidden sret pointer (x8). It is
+  // small (a flag plus an error condition); a 32-byte zeroed buffer is a safe, over-sized slot, and
+  // the payload byte tells us whether the engine built the image.
+  alignas(16) std::uint8_t result[32] = {0};
+  auto fn = reinterpret_cast<LoadImageFn>(loader);
+  fn(result, outImage, kImageFormatPng, png, size, false);
+  return result[0] != 0;
 }
 
 bool SwapCapeImage(void *skinRef, const void *image) {

@@ -96,6 +96,37 @@ Java_org_chimeramc_client_preloader_PreloaderInput_nativeSwapCapeImage(
   return ok ? JNI_TRUE : JNI_FALSE;
 }
 
+JNIEXPORT jlong JNICALL
+Java_org_chimeramc_client_preloader_PreloaderInput_nativeImageLoaderAddress(JNIEnv *, jclass) {
+  return static_cast<jlong>(pl::runtime::ImageLoaderAddress());
+}
+
+/**
+ * Builds a valid engine `mce::Image` from PNG bytes and returns it as a 0x30-byte array, or null
+ * when the image loader is unresolved or the engine rejected the bytes.
+ */
+JNIEXPORT jbyteArray JNICALL
+Java_org_chimeramc_client_preloader_PreloaderInput_nativeBuildCapeImage(
+    JNIEnv *env, jclass, jbyteArray pngBytes) {
+  if (pngBytes == nullptr) return nullptr;
+  const jsize length = env->GetArrayLength(pngBytes);
+  if (length <= 0) return nullptr;
+  std::vector<std::uint8_t> png(static_cast<std::size_t>(length));
+  env->GetByteArrayRegion(pngBytes, 0, length, reinterpret_cast<jbyte *>(png.data()));
+
+  // mce::Image is exactly 0x30 bytes (verified from the SerializedSkinRef accessors).
+  constexpr std::size_t kImageSize = 0x30;
+  std::vector<std::uint8_t> image(kImageSize, 0);
+  if (!pl::runtime::BuildCapeImageFromPng(png.data(), png.size(), image.data())) {
+    return nullptr;
+  }
+  jbyteArray out = env->NewByteArray(static_cast<jsize>(kImageSize));
+  if (out == nullptr) return nullptr;
+  env->SetByteArrayRegion(out, 0, static_cast<jsize>(kImageSize),
+                          reinterpret_cast<const jbyte *>(image.data()));
+  return out;
+}
+
 JNIEXPORT jboolean JNICALL
 Java_org_chimeramc_client_preloader_PreloaderInput_nativeIsCosmeticsHookLive(JNIEnv *, jclass) {
   return (pl::runtime::IsSkinCapeHookLive() || pl::runtime::IsTextureHookLive())

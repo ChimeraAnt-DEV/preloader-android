@@ -14,6 +14,13 @@ struct GameHookSignatures {
   std::string isShowingMenu;
   std::optional<std::size_t> isShowingMenuVtableIndex;
   std::optional<std::size_t> playerRenderVtableIndex;
+  /**
+   * The engine's own image loader, `mce::ImageUtils::loadImageFromMemory(mce::Image&, ImageFormat,
+   * const unsigned char*, size_t, bool)`. Resolved by byte signature (the class exports no symbol)
+   * so the cosmetics path can hand it custom cape PNG bytes and get back a valid `mce::Image`, which
+   * is what SwapCapeImage needs. Empty when the build has no verified pattern.
+   */
+  std::string imageLoaderSig;
 };
 
 void ConfigureGameHookRules(std::string rulesPath, std::string minecraftVersion);

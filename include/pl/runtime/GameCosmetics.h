@@ -127,6 +127,36 @@ constexpr std::size_t kAnimatedImageData = 0xd8;
  */
 bool SwapCapeImage(void *skinRef, const void *image);
 
+/** The `mce::ImageFormat` value for PNG, the format the cape texture ships as. */
+constexpr std::uint32_t kImageFormatPng = 0;
+
+/**
+ * @brief The address of the engine's `mce::ImageUtils::loadImageFromMemory`, or 0 when unresolved.
+ *
+ * Resolved from the per-version `imageLoaderSig` rule (the class exports no symbol). A build whose
+ * pattern is absent returns 0 and the cosmetics path stays on the resource pack.
+ */
+std::uintptr_t ImageLoaderAddress();
+
+/**
+ * @brief Builds a valid `mce::Image` from raw PNG bytes using the engine's own loader.
+ *
+ * This is the piece that makes `SwapCapeImage` usable: the engine fills its own image struct, whose
+ * internal buffer pointer only the engine knows how to set, so the result is a struct that is valid
+ * by construction rather than one the launcher guessed at.
+ *
+ * The call follows the recovered ABI of `loadImageFromMemory(mce::Image &out, ImageFormat,
+ * const unsigned char *, size_t, bool)`: the `brstd::expected<void, error_condition>` return is
+ * delivered through the hidden sret pointer in `x8`, so this allocates a small return buffer and
+ * checks its payload byte.
+ *
+ * @param png      the PNG bytes (must outlive the call; the engine may reference them)
+ * @param size     the PNG length
+ * @param outImage a `kImageSize`-byte buffer that receives the constructed image
+ * @return true when the engine reported success and filled `outImage`
+ */
+bool BuildCapeImageFromPng(const std::uint8_t *png, std::size_t size, void *outImage);
+
 /** True once the skin/cape hook has run at least once this session. */
 bool IsSkinCapeHookLive();
 
