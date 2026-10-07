@@ -268,6 +268,17 @@ bool IsPacketHookLive() {
   return g_packetCalls.load(std::memory_order_relaxed) != 0;
 }
 
+bool SwapCapeImage(void *skinRef, const void *image) {
+  // The real pixel substitution: the cape the renderer samples is the mce::Image member of
+  // SerializedSkinRef at +0xa8. The whole struct is copied rather than a pointer inside it poked,
+  // because mce::Image's internal fields are not recoverable from the stripped binary — so no
+  // assumption is made about where the buffer pointer sits.
+  if (skinRef == nullptr || image == nullptr) return false;
+  auto *destination = static_cast<std::uint8_t *>(skinRef) + skinlayout::kCapeImageData;
+  std::memcpy(destination, image, skinlayout::kImageSize);
+  return true;
+}
+
 bool IsSkinCapeHookLive() {
   return g_skinCapeCalls.load(std::memory_order_relaxed) != 0;
 }

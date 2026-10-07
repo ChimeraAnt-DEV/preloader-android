@@ -92,6 +92,41 @@ void InitCosmeticsHooks(std::size_t skinCapeVtableIndex, std::size_t textureBind
  */
 bool IsPacketHookLive();
 
+/**
+ * @brief The verified `SerializedSkinRef` layout, from the shipped 1.26.60.28 binary.
+ *
+ * Recovered from the accessor bodies: `getImageData()` returns `this + 0x78`,
+ * `getCapeImageData()` returns `this + 0xa8`, and nothing sits between them — exactly one
+ * `mce::Image`, so the type is 0x30 bytes. The offsets are exact; the internal field layout of
+ * `mce::Image` is not recoverable from the stripped binary, which is why the swap copies a whole
+ * struct rather than poking a buffer pointer.
+ */
+namespace skinlayout {
+constexpr std::size_t kImageSize = 0x30;
+constexpr std::size_t kImageData = 0x78;
+constexpr std::size_t kCapeImageData = 0xa8;
+constexpr std::size_t kAnimatedImageData = 0xd8;
+} // namespace skinlayout
+
+/**
+ * @brief Replaces the cape image inside a `SerializedSkinRef` with a caller-supplied struct.
+ *
+ * **This is the real pixel substitution.** The cape the renderer samples lives in the `mce::Image`
+ * at `ref + 0xa8`; writing that member is what changes the cape. Because the binary does not expose
+ * `mce::Image`'s internal fields, the whole 0x30-byte struct is copied rather than a pointer poked
+ * — the caller supplies a fully-formed image struct (built by the engine's own image loader, so its
+ * internals are valid), and no assumption is made about where the buffer pointer sits inside it.
+ *
+ * Safety:
+ *  - `ref == nullptr` is a no-op (a player with no skin yet).
+ *  - `image == nullptr` is a no-op (nothing to swap in).
+ *  - The destination is `ref + 0xa8` and exactly `kImageSize` bytes are written, so a struct that
+ *    is larger on a future build cannot overrun into the next member.
+ *
+ * @return true when the struct was copied.
+ */
+bool SwapCapeImage(void *skinRef, const void *image);
+
 /** True once the skin/cape hook has run at least once this session. */
 bool IsSkinCapeHookLive();
 

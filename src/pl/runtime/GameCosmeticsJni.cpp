@@ -80,6 +80,23 @@ Java_org_chimeramc_client_preloader_PreloaderInput_nativeSetRenderGeometry(
 }
 
 JNIEXPORT jboolean JNICALL
+Java_org_chimeramc_client_preloader_PreloaderInput_nativeSwapCapeImage(
+    JNIEnv *env, jclass, jlong skinRefAddress, jbyteArray imageBytes) {
+  if (skinRefAddress == 0 || imageBytes == nullptr) return JNI_FALSE;
+  const jsize length = env->GetArrayLength(imageBytes);
+  // The image struct must be at least the verified size; copy exactly that many bytes.
+  constexpr jsize kImageSize = 0x30;
+  if (length < kImageSize) return JNI_FALSE;
+  std::vector<std::uint8_t> image(static_cast<std::size_t>(kImageSize), 0);
+  env->GetByteArrayRegion(imageBytes, 0, kImageSize,
+                          reinterpret_cast<jbyte *>(image.data()));
+  const bool ok = pl::runtime::SwapCapeImage(
+      reinterpret_cast<void *>(static_cast<std::uintptr_t>(skinRefAddress)),
+      image.data());
+  return ok ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jboolean JNICALL
 Java_org_chimeramc_client_preloader_PreloaderInput_nativeIsCosmeticsHookLive(JNIEnv *, jclass) {
   return (pl::runtime::IsSkinCapeHookLive() || pl::runtime::IsTextureHookLive())
              ? JNI_TRUE : JNI_FALSE;
