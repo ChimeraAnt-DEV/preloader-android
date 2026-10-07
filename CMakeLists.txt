@@ -31,6 +31,7 @@ set(PRELOADER_SOURCES
         src/pl/runtime/GameHooks.cpp
         src/pl/runtime/GameCosmetics.cpp
         src/pl/runtime/GameCosmeticsJni.cpp
+        src/pl/runtime/mce_image_hook.cpp
         src/pl/runtime/GameLocalPlayer.cpp
         src/pl/runtime/GamePlayerRender.cpp
         src/pl/runtime/GameResourcePackReload.cpp
