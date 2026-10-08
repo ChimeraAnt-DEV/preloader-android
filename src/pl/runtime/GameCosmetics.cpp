@@ -19,6 +19,9 @@ namespace {
 
 constexpr const char *kGameModule = "libminecraftpe.so";
 
+// 'CHF1' little-endian, matching pl::cosmetics::CosmeticFrame.MAGIC on the Java side.
+constexpr std::uint32_t kCosmeticFrameMagic = 0x43484631;
+
 // The Skin cape entry and the texture binder are reached by RTTI name, exactly like the
 // local-player feed's ClientInstance slot. The default slots are the ones the feed was designed
 // around; a build that reorders them reports "unresolved" and stays on the resource-pack path.
@@ -65,6 +68,9 @@ std::unordered_map<std::uint64_t, CosmeticImage> g_capeMeta;
 std::unordered_map<std::uint64_t, CosmeticImage> g_textureMeta;
 std::vector<std::uint8_t> g_geometry;
 std::uint64_t g_geometryHash = 0;
+// The per-frame transform buffer the launcher pushes (CosmeticFrame wire layout). Stored whole;
+// the render hook parses it while drawing the local player.
+std::vector<std::uint8_t> g_cosmeticFrame;
 
 long long MonotonicMs() {
   timespec ts{};
@@ -255,6 +261,38 @@ void SetRenderGeometry(const std::uint8_t *data, std::size_t size) {
     hash *= 1099511628211ULL;
   }
   g_geometryHash = hash;
+}
+
+void SetCosmeticFrame(const std::uint8_t *data, std::size_t size) {
+  std::lock_guard<std::mutex> lock(g_mutex);
+  if (data == nullptr || size == 0) {
+    g_cosmeticFrame.clear();
+    return;
+  }
+  g_cosmeticFrame.assign(data, data + size);
+}
+
+std::size_t CosmeticFrameSize() {
+  std::lock_guard<std::mutex> lock(g_mutex);
+  return g_cosmeticFrame.size();
+}
+
+CosmeticFrameHeader ReadCosmeticFrameHeader() {
+  std::lock_guard<std::mutex> lock(g_mutex);
+  CosmeticFrameHeader header;
+  if (g_cosmeticFrame.size() < 8) return header;
+  const std::uint8_t *p = g_cosmeticFrame.data();
+  const std::uint32_t magic = static_cast<std::uint32_t>(p[0]) |
+                              (static_cast<std::uint32_t>(p[1]) << 8) |
+                              (static_cast<std::uint32_t>(p[2]) << 16) |
+                              (static_cast<std::uint32_t>(p[3]) << 24);
+  if (magic != kCosmeticFrameMagic) return header;
+  header.valid = true;
+  header.flags = static_cast<std::uint32_t>(p[4]) |
+                 (static_cast<std::uint32_t>(p[5]) << 8) |
+                 (static_cast<std::uint32_t>(p[6]) << 16) |
+                 (static_cast<std::uint32_t>(p[7]) << 24);
+  return header;
 }
 
 std::size_t RenderGeometrySize() {
