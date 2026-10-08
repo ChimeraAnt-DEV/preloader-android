@@ -30,6 +30,8 @@ set(PRELOADER_SOURCES
         src/pl/cosmetics/geometry/BedrockModelParser.cpp
         src/pl/cosmetics/NativeModelMatrix.cpp
         src/pl/cosmetics/NativeRenderHook.cpp
+        src/pl/cosmetics/animation/AnimationSolver.cpp
+        src/pl/cosmetics/animation/AnimationJni.cpp
         src/pl/hooks/DobbyHookManager.cpp
         src/pl/runtime/GameHookRules.cpp
         src/pl/runtime/GameHooks.cpp
