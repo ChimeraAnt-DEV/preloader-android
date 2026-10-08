@@ -68,6 +68,20 @@ PL_EXPORT RenderStats ReadRenderStats();
  */
 PL_EXPORT bool InitNativeCosmeticRenderHook(std::size_t vtableIndex = 0);
 
+/**
+ * @brief Sets the world-space matrix the cosmetic meshes are anchored with.
+ *
+ * The game's player-render function is stripped, so the view/projection matrices cannot be read
+ * from the passthrough hook arguments. A caller that resolves them (e.g. by signature scanning the
+ * render context) feeds the composed world->clip matrix here; until then the renderer uses an
+ * identity anchor and the cosmetics draw around the render origin. Pass a non-finite matrix to
+ * clear the override and fall back to identity.
+ */
+PL_EXPORT void SetCosmeticWorld(const Mat4 &world);
+
+/** @brief The currently set cosmetic world matrix, or identity when none has been set. */
+PL_EXPORT Mat4 GetCosmeticWorld();
+
 /** @brief True once the render hook has observed at least one frame. */
 PL_EXPORT bool IsNativeCosmeticRenderHookLive();
 

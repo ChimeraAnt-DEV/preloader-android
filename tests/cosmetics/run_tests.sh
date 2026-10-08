@@ -48,4 +48,10 @@ compile_run CosmeticSocketProtocolTest \
   "$root/src/pl/cosmetics/network/CosmeticSocketProtocol.cpp" \
   "$here/CosmeticSocketProtocolTest.cpp"
 
+compile_run NativeCosmeticDataTest \
+  "$root/src/pl/cosmetics/NativeCosmeticData.cpp" \
+  "$root/src/pl/cosmetics/NativeModelMatrix.cpp" \
+  "$root/src/pl/cosmetics/geometry/BedrockModelParser.cpp" \
+  "$here/NativeCosmeticDataTest.cpp"
+
 echo "all cosmetics host tests passed"

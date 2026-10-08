@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <vector>
 
 /**
  * @file GameCosmetics.h
@@ -52,6 +53,14 @@ const CosmeticImage *FindCapeOverride(std::uint64_t playerKey);
 /** Number of cape overrides currently registered. */
 std::size_t CapeOverrideCount();
 
+/**
+ * @brief The first registered cape override's pixels, or nullptr when none.
+ *
+ * Used as the cosmetic texture atlas for the native mesh renderer (the cape/hat/pet meshes share
+ * the equipped cape's atlas). The pixels stay owned by the registry.
+ */
+const CosmeticImage *FirstCapeOverride();
+
 /** Replaces the pixels bound to a texture id (the in-memory texture swap). */
 void SetTextureOverride(std::uint64_t textureId, const std::uint8_t *rgba,
                         std::uint32_t width, std::uint32_t height);
@@ -95,8 +104,25 @@ struct CosmeticFrameHeader {
  */
 CosmeticFrameHeader ReadCosmeticFrameHeader();
 
+/** @brief The number of bytes in the last pushed cosmetic frame. */
+std::size_t CosmeticFrameBytes();
+
+/**
+ * @brief Copies the last pushed cosmetic frame into @p out.
+ * @return true when a non-empty frame was copied.
+ */
+bool CosmeticFrameData(std::vector<std::uint8_t> &out);
+
 /** The current render geometry size in bytes, or 0 when none is set. */
 std::size_t RenderGeometrySize();
+
+/**
+ * @brief Copies the current render geometry blob (the launcher-published length-prefixed JSON
+ * entries) into @p out.
+ * @param out receives the bytes on success
+ * @return true when a non-empty blob was copied
+ */
+bool RenderGeometryData(std::vector<std::uint8_t> &out);
 
 /** A cheap hash of the current render geometry, so a frame can detect a change. */
 std::uint64_t RenderGeometryHash();
