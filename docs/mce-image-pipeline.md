@@ -94,6 +94,46 @@ one-shot for an upload the caller triggers itself.
 `libminecraftpe.so` from `minecraft-26-60-28.apk` (mcpedl.org `file_id` 7572, arm64-v8a,
 368,150,880 bytes inflated; `imageLoaderSig` matched once at `0x14df7ce4`).
 
+## The launcher surface (bound in `GameCosmeticsJni.cpp`)
+
+The native pipeline above is driven from Java through `PreloaderInput`, so the launcher can hand the
+engine a custom cape *at the moment the engine uploads a texture*. The JNI surface is:
+
+- `nativeSetContentSubstitution(sourceBytes, rgba, w, h)` — register a rule "when the engine loads
+  these exact bytes, build the image from this RGBA instead" (FNV-1a keyed on the incoming bytes).
+- `nativeArmNextImageOverride(rgba, w, h)` / `nativeClearNextImageOverride` — one-shot override for
+  an upload the launcher itself triggers.
+- `nativeSubstitutionCount` / `nativeClearContentSubstitutions`.
+- `nativeIsMceImageHookLive` / `nativeIsImagePathVerified` / `nativeReadMceImageHookStats` —
+  diagnostics the UI reads to report which route is actually live.
+- `nativeIsTextureCacheFlushAvailable` / `nativeRequestTextureCacheFlush`.
+
+Every call is fail-closed. On a build where the loader probe failed, the calls are no-ops that
+report "not installed", and the pack path (or the `SerializedSkinRef` struct-swap) keeps carrying the
+cosmetic. See `NativeCosmeticsBridge.registerSubstitution` /
+`NativeCosmeticsFeed.describeImagePipeline` for the launcher-half.
+
+## Verified by re-analysis (minecraft-26-60-28.apk, file_id 7572)
+
+Re-downloading the APK and re-running the disassembly confirmed every number this doc relies on:
+
+- `imageLoaderSig` matches **exactly once** at `0x14df7ce4`.
+- The loader ABI is exactly as recovered: `mov x19, x8` (sret), `mov x20, x0` (out), `mov w21, w1`
+  (format), `mov x24, x2` (data), `mov x23, x3` (size), `mov w22, w4` (flag), payload byte written
+  at `[x19, #0x10]`, SIMD `str q0, [x20]` head store, and the format dispatch `{0, 1, 3, 4}`.
+- `LoadImageFn` (the `x8` sret return-type declaration) is the correct ABI; the built object
+  emits `add x8, sp, #0x8` before the `blr`.
+- The `SerializedSkinRef` accessor offsets (`getImageData +0x78`, `getCapeImageData +0xa8`,
+  `getAnimatedImageData +0xd8`) are present as constant-folded `add x0,x0,#imm; ret` accessor
+  bodies — `mce::Image` is exactly 0x30 bytes.
+- `LivePlayerRenderer` vtable slot 17 resolves (via the relocation-aware `Vtable.cpp` replica) to
+  `0xaeaefb4` — the same render entry the player-render feed and the native cosmetics hook use.
+- `ClientNetworkHandler` vtable slot 40 resolves to `0xb80f518`.
+
+The `.data.rel.ro` pointers are RELATIVE-relocation addends (`R_AARCH64_RELATIVE`); a static byte
+scan of the section reads 0, so the typeinfo lookup must be relocation-aware (which `Vtable.cpp`
+is at runtime, where relocations are applied).
+
 ## Still not implemented (honest boundary)
 
 The **pixel substitution target** at this seam — rewriting `data`/`size` for a specific skin — is
