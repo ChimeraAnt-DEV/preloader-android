@@ -32,6 +32,9 @@ set(PRELOADER_SOURCES
         src/pl/cosmetics/NativeRenderHook.cpp
         src/pl/cosmetics/animation/AnimationSolver.cpp
         src/pl/cosmetics/animation/AnimationJni.cpp
+        src/pl/cosmetics/network/CosmeticSocketProtocol.cpp
+        src/pl/cosmetics/network/CosmeticSocketClient.cpp
+        src/pl/cosmetics/network/CosmeticSyncJni.cpp
         src/pl/hooks/DobbyHookManager.cpp
         src/pl/runtime/GameHookRules.cpp
         src/pl/runtime/GameHooks.cpp
