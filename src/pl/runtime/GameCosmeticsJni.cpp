@@ -80,6 +80,13 @@ Java_org_chimeramc_client_preloader_PreloaderInput_nativeSetRenderGeometry(
   pl::runtime::SetRenderGeometry(bytes.data(), bytes.size());
 }
 
+JNIEXPORT void JNICALL
+Java_org_chimeramc_client_preloader_PreloaderInput_nativePushCosmeticFrame(
+    JNIEnv *env, jclass, jbyteArray frame) {
+  std::vector<std::uint8_t> bytes = CopyBytes(env, frame, 0);
+  pl::runtime::SetCosmeticFrame(bytes.data(), bytes.size());
+}
+
 JNIEXPORT jboolean JNICALL
 Java_org_chimeramc_client_preloader_PreloaderInput_nativeSwapCapeImage(
     JNIEnv *env, jclass, jlong skinRefAddress, jbyteArray imageBytes) {

@@ -11,6 +11,7 @@
 #include "pl/Logger.hpp"
 #include "pl/hooks/DobbyHookManager.hpp"
 #include "pl/memory/Vtable.hpp"
+#include "pl/runtime/GameCosmetics.h"
 #include "pl/runtime/GameHookRules.h"
 
 namespace pl::cosmetics {
@@ -31,6 +32,7 @@ std::atomic_bool g_hookLive{false};
 std::atomic<std::uint32_t> g_frameTick{0};
 std::atomic<std::uint32_t> g_frameCalls{0};
 std::atomic<std::uint32_t> g_totalCalls{0};
+std::atomic<std::uint32_t> g_cosmeticFrameTick{0};
 std::atomic<long long> g_lastRenderMs{0};
 
 std::atomic<BoneMatrixSource *> g_boneSource{nullptr};
@@ -59,6 +61,14 @@ void HookRender(void *a, void *b, void *c, void *d, void *e, void *f, void *g, v
   g_totalCalls.fetch_add(1, std::memory_order_relaxed);
   g_lastRenderMs.store(now, std::memory_order_relaxed);
   g_hookLive.store(true, std::memory_order_relaxed);
+
+  // Consume the per-frame transform buffer the launcher pushes (CosmeticFrame wire layout). The
+  // launcher computes the cape chain, pet pose and head look in Java; this is where the render
+  // thread reads them, so the cosmetic data is live every frame rather than only at a hook install.
+  const pl::runtime::CosmeticFrameHeader cosmetic = pl::runtime::ReadCosmeticFrameHeader();
+  if (cosmetic.valid) {
+    g_cosmeticFrameTick.fetch_add(1, std::memory_order_relaxed);
+  }
 
   if (g_origRender) {
     g_origRender(a, b, c, d, e, f, g, h);

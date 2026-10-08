@@ -68,6 +68,33 @@ std::size_t TextureOverrideCount();
 /** Publishes the geometry blob the render hook should draw for the local player. */
 void SetRenderGeometry(const std::uint8_t *data, std::size_t size);
 
+/**
+ * @brief Stores one frame of cosmetic transform data (the Java `CosmeticFrame` wire layout).
+ *
+ * Called every game frame from the launcher's tick. The render hook reads this while drawing the
+ * local player: the cape chain's per-segment lean/sway, the worn hat's head-look and the pet's
+ * per-bone rotations plus its body offset. The buffer is copied, so the caller may reuse it.
+ */
+void SetCosmeticFrame(const std::uint8_t *data, std::size_t size);
+
+/** The size of the current cosmetic frame, or 0 when none has been pushed. */
+std::size_t CosmeticFrameSize();
+
+/** The parsed header of the current cosmetic frame. */
+struct CosmeticFrameHeader {
+  bool valid = false;
+  std::uint32_t flags = 0;
+};
+
+/**
+ * @brief Parses the header of the last pushed cosmetic frame.
+ *
+ * The render hook calls this each frame to learn whether a cape/accessory/pet is equipped before
+ * drawing. The magic is checked so a frame from a mismatched launcher build is ignored rather than
+ * misread.
+ */
+CosmeticFrameHeader ReadCosmeticFrameHeader();
+
 /** The current render geometry size in bytes, or 0 when none is set. */
 std::size_t RenderGeometrySize();
 
