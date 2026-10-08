@@ -34,7 +34,7 @@ extern "C" {
 
 /** @brief Encodes an advertisement datagram (byte-for-byte the Java CosmeticSyncProtocol). */
 JNIEXPORT jbyteArray JNICALL
-Java_org_chimeramc_client_launcher_preloader_PreloaderInput_nativeEncodeCosmeticAdvert(
+Java_org_chimeramc_client_preloader_PreloaderInput_nativeEncodeCosmeticAdvert(
     JNIEnv *env, jclass, jstring peerId, jstring name, jstring capeId, jstring accessoryId,
     jstring petId) {
   const std::vector<std::uint8_t> packet = pl::cosmetics::network::CosmeticSocketProtocol::encodeAdvert(
@@ -52,7 +52,7 @@ Java_org_chimeramc_client_launcher_preloader_PreloaderInput_nativeEncodeCosmetic
  * @brief Decodes a datagram into `{type, peerId, name, capeId, accessoryId, petId}`, or null.
  */
 JNIEXPORT jobjectArray JNICALL
-Java_org_chimeramc_client_launcher_preloader_PreloaderInput_nativeDecodeCosmeticAdvert(
+Java_org_chimeramc_client_preloader_PreloaderInput_nativeDecodeCosmeticAdvert(
     JNIEnv *env, jclass, jbyteArray data) {
   if (data == nullptr) return nullptr;
   const jsize length = env->GetArrayLength(data);
@@ -75,7 +75,7 @@ Java_org_chimeramc_client_launcher_preloader_PreloaderInput_nativeDecodeCosmetic
 
 /** @brief The datagram magic, so the launcher can size its receive buffer / filter packets. */
 JNIEXPORT jbyteArray JNICALL
-Java_org_chimeramc_client_launcher_preloader_PreloaderInput_nativeCosmeticSyncMagic(
+Java_org_chimeramc_client_preloader_PreloaderInput_nativeCosmeticSyncMagic(
     JNIEnv *env, jclass) {
   jbyteArray result = env->NewByteArray(2);
   const jbyte magic[2] = {static_cast<jbyte>(pl::cosmetics::network::kMagic[0]),

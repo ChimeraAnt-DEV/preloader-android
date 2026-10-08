@@ -23,7 +23,7 @@ extern "C" {
  * empty array when `segments` is not positive.
  */
 JNIEXPORT jfloatArray JNICALL
-Java_org_chimeramc_client_launcher_preloader_PreloaderInput_nativeSampleCapeChain(
+Java_org_chimeramc_client_preloader_PreloaderInput_nativeSampleCapeChain(
     JNIEnv *env, jclass, jdouble moveSpeed, jboolean jumping, jdouble verticalSpeed,
     jdouble distanceMoved, jdouble capeFlap, jdouble bodyYawDegrees, jint segments) {
   if (segments <= 0) {
