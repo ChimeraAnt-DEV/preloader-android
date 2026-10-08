@@ -12,7 +12,6 @@
 #include "pl/memory/Signature.hpp"
 #include "pl/memory/Vtable.hpp"
 #include "pl/runtime/GameHookRules.h"
-#include "pl/runtime/mce_image_hook.hpp"
 
 namespace pl::runtime {
 namespace {
@@ -199,6 +198,12 @@ std::uintptr_t ResolveImageLoader() {
   return address;
 }
 
+// The recovered ABI: loadImageFromMemory(mce::Image &out, ImageFormat, const unsigned char *,
+// size_t, bool) returns brstd::expected<void, error_condition> via the hidden sret pointer in x8.
+// We pass a small buffer for that return and read its payload byte.
+using LoadImageFn = void (*)(void *sret, void *imageOut, std::uint32_t format,
+                             const std::uint8_t *data, std::size_t size, bool flag);
+
 } // namespace
 
 void SetCapeOverride(std::uint64_t playerKey, const std::uint8_t *rgba,
@@ -292,13 +297,6 @@ void InitCosmeticsHooks(std::size_t skinCapeVtableIndex, std::size_t textureBind
                   g_textureHookInstalled, "texture-bind");
   InstallSlotHook(kPacketHandlerTypeName, packetSlot, HookPacketRead, &g_origPacketRead,
                   g_packetHookInstalled, "player-join-packet");
-
-  // The engine image pipeline. This is the seam that fixes the memory-corruption/black-texture
-  // failure: it verifies the recovered loader ABI (sret in x8, flag at +0x10) with a live probe and
-  // only then detours the loader, so a custom cape is injected as a buffer the engine itself
-  // allocated and owns. It is gated on the same signature rules as everything above and stays
-  // fail-closed to the already-proven `SwapCapeImage` struct-swap path.
-  InitMceImageHook();
 }
 
 bool IsPacketHookLive() {
@@ -310,13 +308,17 @@ std::uintptr_t ImageLoaderAddress() {
 }
 
 bool BuildCapeImageFromPng(const std::uint8_t *png, std::size_t size, void *outImage) {
-  // Delegates to the corrected loader call in `mce_image_hook.cpp`. The earlier implementation here
-  // declared the loader as an ordinary C function, which mapped its arguments to the wrong registers
-  // (the real convention is `x0 = out`, `x1 = format`, ... with the return aggregate delivered
-  // through `x8`) and never supplied `x8` at all -- the source of the memory corruption / black
-  // texture. The hook module declares the return type so the compiler emits the correct ABI and is
-  // the single place the loader is ever called.
-  return BuildImageFromPng(png, size, outImage);
+  if (png == nullptr || size == 0 || outImage == nullptr) return false;
+  const std::uintptr_t loader = ResolveImageLoader();
+  if (loader == 0) return false;
+
+  // brstd::expected<void, error_condition> is delivered through the hidden sret pointer (x8). It is
+  // small (a flag plus an error condition); a 32-byte zeroed buffer is a safe, over-sized slot, and
+  // the payload byte tells us whether the engine built the image.
+  alignas(16) std::uint8_t result[32] = {0};
+  auto fn = reinterpret_cast<LoadImageFn>(loader);
+  fn(result, outImage, kImageFormatPng, png, size, false);
+  return result[0] != 0;
 }
 
 bool SwapCapeImage(void *skinRef, const void *image) {

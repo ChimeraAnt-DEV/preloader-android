@@ -50,45 +50,6 @@
   resource-pack path. Never crashes, never partially renders. Runtime-detected, no version
   allowlist.
 
-## Engine image pipeline (`mce_image_hook`) — the cape memory-corruption fix
-- **`mce::Image` is opaque; build it through the engine, never by hand.** It is a 0x30-byte handle
-  (derived from `SerializedSkinRef`: base skin at `+0x78`, cape at `+0xa8`, exactly 0x30 apart) whose
-  backing buffer RenderDragon frees with its own allocator. A launcher-side `malloc`/`std::vector`
-  handed to it faults on free or double-frees, and hand-filling the struct gives the black-box
-  texture because the internal buffer metadata is wrong. `mce_image_hook.cpp` is the only place the
-  engine loader is called; everything goes through `BuildImageFromPng`/`BuildImageFromRgba`.
-- **The loader's ABI is sret-in-`x8`, and the previous code got it wrong.** Disassembly of
-  `mce::ImageUtils::loadImageFromMemory` at the `imageLoaderSig` address (`0x14df7ce4` in
-  1.26.60.28; the pattern matches exactly once) shows `mov x19, x8` in the prologue and the success
-  flag written at `[x19, #0x10]` — the AArch64 indirect-return convention with the return pointer
-  in `x8`. The real argument mapping is `x0 = out image`, `x1 = ImageFormat`, `x2 = data`,
-  `x3 = size`, `x4 = bool`. The old `using LoadImageFn = void(*)(void* sret, void* out, u32, const
-  u8*, size_t, bool)` mapped `x0=sret, x1=out, x2=format, ...` and never supplied `x8`, i.e. it
-  passed the out-struct where the format belongs — the source of the corruption. **The fix is a type
-  fix:** declare the return type as a struct larger than 16 bytes (`LoaderReturn`) and Clang emits
-  the `x8` sret ABI itself; the generated code (`add x8, sp, #0x8` before the `blr`, flag read from
-  `sret+0x10`) is the proof. Do not go back to a hand-written `void(...)` signature.
-- **ImageFormat values the loader accepts are `{0, 1, 3, 4}`** (read from the dispatch in the same
-  routine: `cmp w21, #1`, `sub w8, w21, #3; cmp w8, #2`). `0` is auto-detect → `stb_image`, which
-  decodes PNG (the cape texture route); `4` is RGBA8 (a memcpy). `renoir::ThirdParty::stbi_*` is
-  present in the binary, confirming the PNG path.
-- **Installation is gated on a live probe, not a version list.** `InitMceImageHook` runs a one-shot
-  probe: build a real 1×1 PNG through the loader. Success proves both the address and the ABI;
-  failure refuses the detour and keeps the already-proven `SwapCapeImage` struct-swap. This is the
-  runtime-detected, never-allowlisted rule the other seams follow.
-- **The loader seam has no id — key substitutions by content hash.** `loadImageFromMemory` receives
-  only raw bytes, so `SetContentSubstitution(sourceBytes -> replacementRgba)` keys on the FNV-1a of
-  the *incoming* bytes (stable across loads), and `ArmNextImageOverride` is the one-shot for a known
-  upload the caller triggers. The detour rewrites `data`/`size`/`format` and calls the original with
-  the same sret pointer, so it stays transparent.
-- **Texture cache flush is a proven-callback seam, not a fabricated one.** `mce::TextureGroup` /
-  `SkinRepository` are not RTTI-resolvable in the stripped binary, so `RequestTextureCacheFlush`
-  invokes a caller-installed `TextureFlushFn` and honestly returns false when none is proven (the
-  caller then treats the change as next-bind, not live).
-- **`EngineAllocate`/`EngineFree` refuse foreign and double frees** (tracked set + stored alignment
-  so the aligned `operator delete` matches its `operator new`). Prefer the engine's own allocation
-  via `BuildImageFrom*`; use these only when a buffer must exist before the engine call.
-
 ## Live resource-pack reload (`GameResourcePackReload`)
 - `nativeReloadResourcePacks()` / `pl::runtime::ReloadResourcePacks()` is a **fail-safe
   research seam**, not a working live reload. Reverse-engineering of

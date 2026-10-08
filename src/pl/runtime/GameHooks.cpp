@@ -9,7 +9,6 @@
 #include <vector>
 
 #include "pl/Logger.hpp"
-#include "pl/cosmetics/NativeRenderHook.hpp"
 #include "pl/memory/Hook.hpp"
 #include "pl/memory/Signature.hpp"
 #include "pl/memory/Vtable.hpp"
@@ -162,13 +161,6 @@ void InitGameHooks() {
     // uses it to know the renderer is live and to drive its physics off a real render tick. It
     // is fail-closed, so a build where the slot does not resolve simply keeps the pack path.
     InitPlayerRenderSource(signatures->playerRenderVtableIndex.value_or(0));
-
-    // The native cosmetics render interception (Task 2). It hooks the same LivePlayerRenderer slot
-    // the render feed above uses, which is why the hook backend chains: the two detours both run,
-    // in install order. Ownership is fail-closed, so a build outside the verified range keeps the
-    // resource-pack path.
-    pl::cosmetics::InitNativeCosmeticRenderHook(
-        signatures->playerRenderVtableIndex.value_or(0));
 
     // The native cosmetics seams (skin/cape retrieval and the texture binder). Like the render
     // feed they are fail-closed: a build whose slot does not resolve keeps the resource-pack path.

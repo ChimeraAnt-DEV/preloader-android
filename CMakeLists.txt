@@ -27,20 +27,10 @@ set(PRELOADER_SOURCES
         src/pl/memory/Patch.cpp
         src/pl/memory/Signature.cpp
         src/pl/memory/Vtable.cpp
-        src/pl/cosmetics/geometry/BedrockModelParser.cpp
-        src/pl/cosmetics/NativeModelMatrix.cpp
-        src/pl/cosmetics/NativeRenderHook.cpp
-        src/pl/cosmetics/animation/AnimationSolver.cpp
-        src/pl/cosmetics/animation/AnimationJni.cpp
-        src/pl/cosmetics/network/CosmeticSocketProtocol.cpp
-        src/pl/cosmetics/network/CosmeticSocketClient.cpp
-        src/pl/cosmetics/network/CosmeticSyncJni.cpp
-        src/pl/hooks/DobbyHookManager.cpp
         src/pl/runtime/GameHookRules.cpp
         src/pl/runtime/GameHooks.cpp
         src/pl/runtime/GameCosmetics.cpp
         src/pl/runtime/GameCosmeticsJni.cpp
-        src/pl/runtime/mce_image_hook.cpp
         src/pl/runtime/GameLocalPlayer.cpp
         src/pl/runtime/GamePlayerRender.cpp
         src/pl/runtime/GameResourcePackReload.cpp
