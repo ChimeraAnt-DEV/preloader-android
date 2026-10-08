@@ -28,6 +28,9 @@ set(PRELOADER_SOURCES
         src/pl/memory/Signature.cpp
         src/pl/memory/Vtable.cpp
         src/pl/cosmetics/geometry/BedrockModelParser.cpp
+        src/pl/cosmetics/NativeModelMatrix.cpp
+        src/pl/cosmetics/NativeRenderHook.cpp
+        src/pl/hooks/DobbyHookManager.cpp
         src/pl/runtime/GameHookRules.cpp
         src/pl/runtime/GameHooks.cpp
         src/pl/runtime/GameCosmetics.cpp

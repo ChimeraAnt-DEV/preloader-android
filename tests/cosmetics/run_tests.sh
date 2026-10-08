@@ -36,6 +36,10 @@ compile_run BedrockModelParserTest \
   "$root/src/pl/cosmetics/geometry/BedrockModelParser.cpp" \
   "$here/BedrockModelParserTest.cpp"
 
+compile_run NativeModelMatrixTest \
+  "$root/src/pl/cosmetics/NativeModelMatrix.cpp" \
+  "$here/NativeModelMatrixTest.cpp"
+
 compile_run AnimationSolverTest \
   "$root/src/pl/cosmetics/animation/AnimationSolver.cpp" \
   "$here/AnimationSolverTest.cpp"
