@@ -229,6 +229,12 @@ std::size_t CapeOverrideCount() {
   return g_capeMeta.size();
 }
 
+const CosmeticImage *FirstCapeOverride() {
+  std::lock_guard<std::mutex> lock(g_mutex);
+  if (g_capeMeta.empty()) return nullptr;
+  return &g_capeMeta.begin()->second;
+}
+
 void SetTextureOverride(std::uint64_t textureId, const std::uint8_t *rgba,
                         std::uint32_t width, std::uint32_t height) {
   std::lock_guard<std::mutex> lock(g_mutex);
@@ -277,6 +283,21 @@ std::size_t CosmeticFrameSize() {
   return g_cosmeticFrame.size();
 }
 
+std::size_t CosmeticFrameBytes() {
+  std::lock_guard<std::mutex> lock(g_mutex);
+  return g_cosmeticFrame.size();
+}
+
+bool CosmeticFrameData(std::vector<std::uint8_t> &out) {
+  std::lock_guard<std::mutex> lock(g_mutex);
+  if (g_cosmeticFrame.empty()) {
+    out.clear();
+    return false;
+  }
+  out = g_cosmeticFrame;
+  return true;
+}
+
 CosmeticFrameHeader ReadCosmeticFrameHeader() {
   std::lock_guard<std::mutex> lock(g_mutex);
   CosmeticFrameHeader header;
@@ -298,6 +319,16 @@ CosmeticFrameHeader ReadCosmeticFrameHeader() {
 std::size_t RenderGeometrySize() {
   std::lock_guard<std::mutex> lock(g_mutex);
   return g_geometry.size();
+}
+
+bool RenderGeometryData(std::vector<std::uint8_t> &out) {
+  std::lock_guard<std::mutex> lock(g_mutex);
+  if (g_geometry.empty()) {
+    out.clear();
+    return false;
+  }
+  out = g_geometry;
+  return true;
 }
 
 std::uint64_t RenderGeometryHash() {

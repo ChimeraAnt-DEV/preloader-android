@@ -29,6 +29,9 @@ set(PRELOADER_SOURCES
         src/pl/memory/Vtable.cpp
         src/pl/cosmetics/geometry/BedrockModelParser.cpp
         src/pl/cosmetics/NativeModelMatrix.cpp
+        src/pl/cosmetics/NativeCosmeticData.cpp
+        src/pl/cosmetics/NativeCosmeticContext.cpp
+        src/pl/cosmetics/NativeCosmeticRenderer.cpp
         src/pl/cosmetics/NativeRenderHook.cpp
         src/pl/cosmetics/animation/AnimationSolver.cpp
         src/pl/cosmetics/animation/AnimationJni.cpp

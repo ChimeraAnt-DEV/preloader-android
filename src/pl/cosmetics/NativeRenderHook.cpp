@@ -9,12 +9,19 @@
 #include <ctime>
 
 #include "pl/Logger.hpp"
+#include "pl/cosmetics/NativeCosmeticContext.hpp"
+#include "pl/cosmetics/NativeCosmeticRenderer.hpp"
 #include "pl/hooks/DobbyHookManager.hpp"
 #include "pl/memory/Vtable.hpp"
 #include "pl/runtime/GameCosmetics.h"
 #include "pl/runtime/GameHookRules.h"
 
 namespace pl::cosmetics {
+
+// Forward declaration defined after the anonymous namespace; the detour calls it after the game's
+// renderer runs, which is always well after module load.
+void DrawCosmeticsOnce(const pl::runtime::CosmeticFrameHeader &cosmetic);
+
 namespace {
 
 constexpr const char *kGameModule = "libminecraftpe.so";
@@ -33,6 +40,7 @@ std::atomic<std::uint32_t> g_frameTick{0};
 std::atomic<std::uint32_t> g_frameCalls{0};
 std::atomic<std::uint32_t> g_totalCalls{0};
 std::atomic<std::uint32_t> g_cosmeticFrameTick{0};
+std::atomic<std::uint32_t> g_lastCosmeticDrawTick{0};
 std::atomic<long long> g_lastRenderMs{0};
 
 std::atomic<BoneMatrixSource *> g_boneSource{nullptr};
@@ -73,9 +81,66 @@ void HookRender(void *a, void *b, void *c, void *d, void *e, void *f, void *g, v
   if (g_origRender) {
     g_origRender(a, b, c, d, e, f, g, h);
   }
+
+  // The rasterization step: draw the equipped capes/pets/hats into the frame the game just drew.
+  // The frame and geometry blobs come from the launcher; the atlas is the first cape override's
+  // pixels. The world matrix is supplied by a provider when one is installed; identity otherwise,
+  // which renders around the origin of the render pass (the honest fallback until the camera
+  // matrix is resolved on the build).
+  g_lastCosmeticDrawTick.fetch_add(1, std::memory_order_relaxed);
+  DrawCosmeticsOnce(cosmetic);
 }
 
 } // namespace
+
+// The cosmetic world anchor. Guarded by an atomic flag; a non-finite matrix clears it.
+std::atomic<bool> g_hasCosmeticWorld{false};
+Mat4 g_cosmeticWorld;
+
+void SetCosmeticWorld(const Mat4 &world) {
+  g_cosmeticWorld = world;
+  if (world.isFinite()) {
+    g_hasCosmeticWorld.store(true, std::memory_order_release);
+  } else {
+    g_hasCosmeticWorld.store(false, std::memory_order_release);
+  }
+}
+
+Mat4 GetCosmeticWorld() {
+  if (g_hasCosmeticWorld.load(std::memory_order_acquire)) return g_cosmeticWorld;
+  // No explicit override: anchor the cosmetics at the live local player, so they appear where the
+  // player stands rather than at the render origin.
+  return WorldFromLocalPlayer();
+}
+
+/**
+ * @brief Rasterises the equipped cosmetics for the current frame.
+ *
+ * Called after the game's player render. Pulls the frame + geometry blobs from the registry and the
+ * first cape override as the atlas, then hands them to {@link NativeCosmeticRenderer}. All failure
+ * modes are handled inside the renderer (bounds checks, GLES availability); the only thing this
+ * method does is marshal the inputs.
+ */
+void DrawCosmeticsOnce(const pl::runtime::CosmeticFrameHeader &cosmetic) {
+  if (!cosmetic.valid || (cosmetic.flags & 0x7u) == 0) return;
+
+  std::vector<std::uint8_t> frameBytes;
+  std::vector<std::uint8_t> geometry;
+  if (!pl::runtime::CosmeticFrameData(frameBytes)) return;
+  pl::runtime::RenderGeometryData(geometry);
+  if (geometry.empty()) return;
+
+  const pl::runtime::CosmeticImage *atlas = pl::runtime::FirstCapeOverride();
+
+  pl::cosmetics::CosmeticDrawResult result = NativeCosmeticRenderer::drawFrame(
+      std::span<const std::uint8_t>(frameBytes.data(), frameBytes.size()),
+      std::span<const std::uint8_t>(geometry.data(), geometry.size()),
+      atlas ? atlas->rgba : nullptr,
+      atlas ? static_cast<int>(atlas->width) : 0,
+      atlas ? static_cast<int>(atlas->height) : 0,
+      GetCosmeticWorld());
+  (void)result;
+}
 
 void SetBoneMatrixSource(BoneMatrixSource *source) {
   g_boneSource.store(source, std::memory_order_relaxed);
@@ -135,6 +200,28 @@ bool InitNativeCosmeticRenderHook(std::size_t vtableIndex) {
     preloaderLogger.warn(
         "Native cosmetics: render hook not installed; staying on the resource-pack path");
     return false;
+  }
+
+  // Resolve the GLES surface once; on a Vulkan-only build the renderer stays a no-op every frame.
+  NativeCosmeticRenderer::init();
+
+  // Best-effort: scan the game module for a camera/projection matrix at runtime. When found, feed
+  // it to the renderer as the world anchor, so the cosmetics are drawn through the real camera. The
+  // scan is gated by the same version range guard above (it only runs on verified builds).
+  std::uintptr_t cameraAddress = 0;
+  if (pl::cosmetics::ResolveRenderWorldFromPatterns(kGameModule, cameraAddress) &&
+      cameraAddress != 0) {
+    const auto *floats = reinterpret_cast<const float *>(cameraAddress);
+    Mat4 world;
+    std::memcpy(world.m, floats, sizeof(world.m));
+    if (world.isFinite()) {
+      pl::cosmetics::SetCosmeticWorld(world);
+      preloaderLogger.info(
+          "Native cosmetics: render world anchored from camera matrix at {:x}", cameraAddress);
+    }
+  } else {
+    // Fall back to the live local-player anchor (set every frame in GetCosmeticWorld).
+    preloaderLogger.info("Native cosmetics: using local-player world anchor (no camera matrix)");
   }
 
   preloaderLogger.info("Native cosmetics: LivePlayerRenderer::render hooked (slot {})", slot);
