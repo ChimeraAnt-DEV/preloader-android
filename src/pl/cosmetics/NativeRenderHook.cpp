@@ -15,6 +15,7 @@
 #include "pl/memory/Vtable.hpp"
 #include "pl/runtime/GameCosmetics.h"
 #include "pl/runtime/GameHookRules.h"
+#include "pl/runtime/GameLocalPlayer.h"
 
 namespace pl::cosmetics {
 
@@ -41,6 +42,7 @@ std::atomic<std::uint32_t> g_frameCalls{0};
 std::atomic<std::uint32_t> g_totalCalls{0};
 std::atomic<std::uint32_t> g_cosmeticFrameTick{0};
 std::atomic<std::uint32_t> g_lastCosmeticDrawTick{0};
+std::atomic<std::uint64_t> g_lastDrawnFrameVersion{0};
 std::atomic<long long> g_lastRenderMs{0};
 
 std::atomic<BoneMatrixSource *> g_boneSource{nullptr};
@@ -120,13 +122,34 @@ Mat4 GetCosmeticWorld() {
  * first cape override as the atlas, then hands them to {@link NativeCosmeticRenderer}. All failure
  * modes are handled inside the renderer (bounds checks, GLES availability); the only thing this
  * method does is marshal the inputs.
+ *
+ * <p><b>Which player?</b> The hook's render arguments are an unknown ABI, so the detour cannot
+ * inspect which model it is drawing. The honest scoping available is: the cosmetic frame is
+ * published by the launcher <em>for the local player</em>, and the local-player feed is live only
+ * while the game has a live local player. So this only draws when {@code ReadLocalPlayerPosition}
+ * is live (i.e. we are in a world and the local player exists), and it draws <em>once per published
+ * frame version</em> — the first render call of the frame — rather than once per rendered model,
+ * so other players drawn later in the same frame do not get the local player's cosmetics layered
+ * on them.
  */
 void DrawCosmeticsOnce(const pl::runtime::CosmeticFrameHeader &cosmetic) {
   if (!cosmetic.valid || (cosmetic.flags & 0x7u) == 0) return;
 
+  // Lock-free snapshot of the double-buffered frame, with the published version.
   std::vector<std::uint8_t> frameBytes;
+  std::uint64_t version = 0;
+  if (!pl::runtime::CosmeticFrameSnapshot(frameBytes, version)) return;
+  // Re-enter once per frame version: the first render call of a frame draws the cosmetics; the
+  // later calls (other player models in the same frame) find the same version and skip.
+  if (version == g_lastDrawnFrameVersion.load(std::memory_order_relaxed)) return;
+  g_lastDrawnFrameVersion.store(version, std::memory_order_relaxed);
+
+  // Scope to a live local player: if the game has not produced a local-player snapshot (not in a
+  // world / loading screen), there is nobody to wear the cosmetics, so draw nothing.
+  float probe[3] = {0.0F, 0.0F, 0.0F};
+  if (!pl::runtime::ReadLocalPlayerPosition(probe)) return;
+
   std::vector<std::uint8_t> geometry;
-  if (!pl::runtime::CosmeticFrameData(frameBytes)) return;
   pl::runtime::RenderGeometryData(geometry);
   if (geometry.empty()) return;
 

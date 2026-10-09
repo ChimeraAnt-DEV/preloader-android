@@ -3,6 +3,8 @@
 #include <cstdint>
 #include <vector>
 
+#include "pl/cosmetics/NativeCosmeticRenderer.hpp"
+#include "pl/cosmetics/NativeRenderHook.hpp"
 #include "pl/runtime/GameCosmetics.h"
 #include "pl/runtime/mce_image_hook.hpp"
 
@@ -138,6 +140,15 @@ Java_org_chimeramc_client_preloader_PreloaderInput_nativeBuildCapeImage(
 JNIEXPORT jboolean JNICALL
 Java_org_chimeramc_client_preloader_PreloaderInput_nativeIsCosmeticsHookLive(JNIEnv *, jclass) {
   return (pl::runtime::IsSkinCapeHookLive() || pl::runtime::IsTextureHookLive())
+             ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_org_chimeramc_client_preloader_PreloaderInput_nativeIsRendererDrawable(JNIEnv *, jclass) {
+  // The native renderer can actually draw cosmetics only when BOTH the player-render hook is live
+  // AND the GLES draw path was resolved. On a Vulkan-only RenderDragon build the GLES half is
+  // unavailable, so the honest status is "not drawable" even though the hook fires.
+  return (pl::cosmetics::IsNativeCosmeticRenderHookLive() && pl::cosmetics::NativeCosmeticRenderer::init())
              ? JNI_TRUE : JNI_FALSE;
 }
 
