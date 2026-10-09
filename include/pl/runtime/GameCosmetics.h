@@ -113,6 +113,16 @@ std::size_t CosmeticFrameBytes();
  */
 bool CosmeticFrameData(std::vector<std::uint8_t> &out);
 
+/**
+ * @brief Lock-free snapshot of the published cosmetic frame for the render thread.
+ *
+ * Copies the published double-buffer slot (the writer swaps whole vectors, never mutating in
+ * place) and returns the published version, so the render hook can skip re-parsing when the
+ * version has not changed since its last read.
+ * @return true when a non-empty frame is available.
+ */
+bool CosmeticFrameSnapshot(std::vector<std::uint8_t> &out, std::uint64_t &version);
+
 /** The current render geometry size in bytes, or 0 when none is set. */
 std::size_t RenderGeometrySize();
 

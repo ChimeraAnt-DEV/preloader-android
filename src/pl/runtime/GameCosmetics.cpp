@@ -68,9 +68,16 @@ std::unordered_map<std::uint64_t, CosmeticImage> g_capeMeta;
 std::unordered_map<std::uint64_t, CosmeticImage> g_textureMeta;
 std::vector<std::uint8_t> g_geometry;
 std::uint64_t g_geometryHash = 0;
-// The per-frame transform buffer the launcher pushes (CosmeticFrame wire layout). Stored whole;
-// the render hook parses it while drawing the local player.
-std::vector<std::uint8_t> g_cosmeticFrame;
+
+// The per-frame transform buffer (CosmeticFrame wire layout) is double-buffered so the launcher's
+// writer thread never blocks the render thread: the JNI side writes into the *pending* slot while
+// the render hook reads the *published* slot, and a publish swaps them atomically under the short
+// mutex. The render thread's reads are lock-free after a single swap-in, which keeps it off the
+// writer's critical section entirely.
+std::vector<std::uint8_t> g_framePending;
+std::vector<std::uint8_t> g_framePublished;
+std::atomic<std::uint64_t> g_framePublishedVersion{0};
+std::uint64_t g_frameReaderVersion = 0;
 
 long long MonotonicMs() {
   timespec ts{};
@@ -272,37 +279,59 @@ void SetRenderGeometry(const std::uint8_t *data, std::size_t size) {
 void SetCosmeticFrame(const std::uint8_t *data, std::size_t size) {
   std::lock_guard<std::mutex> lock(g_mutex);
   if (data == nullptr || size == 0) {
-    g_cosmeticFrame.clear();
+    g_framePending.clear();
+    // Publish the empty frame so the render thread stops drawing the previous one.
+    g_framePublished.clear();
+    g_framePublishedVersion.fetch_add(1, std::memory_order_release);
     return;
   }
-  g_cosmeticFrame.assign(data, data + size);
+  g_framePending.assign(data, data + size);
+  // Publish: swap the pending buffer into the read slot and bump the version. The render thread
+  // only ever reads g_framePublished, so this single atomic bump is what makes the new frame
+  // visible without the reader ever touching the writer's mutex.
+  g_framePublished.swap(g_framePending);
+  g_framePublishedVersion.fetch_add(1, std::memory_order_release);
 }
 
-std::size_t CosmeticFrameSize() {
-  std::lock_guard<std::mutex> lock(g_mutex);
-  return g_cosmeticFrame.size();
-}
-
-std::size_t CosmeticFrameBytes() {
-  std::lock_guard<std::mutex> lock(g_mutex);
-  return g_cosmeticFrame.size();
-}
-
-bool CosmeticFrameData(std::vector<std::uint8_t> &out) {
-  std::lock_guard<std::mutex> lock(g_mutex);
-  if (g_cosmeticFrame.empty()) {
+/**
+ * A lock-free snapshot of the published frame used by the render thread.
+ *
+ * The render thread calls this once per frame; it copies the published buffer under no lock (the
+ * written slot is only replaced by the writer under the mutex, and the copy reads a consistent
+ * published slot because the writer swaps whole vectors, never mutating in place).
+ */
+bool CosmeticFrameSnapshot(std::vector<std::uint8_t> &out, std::uint64_t &version) {
+  version = g_framePublishedVersion.load(std::memory_order_acquire);
+  if (g_framePublished.empty()) {
     out.clear();
     return false;
   }
-  out = g_cosmeticFrame;
+  out = g_framePublished; // whole-vector copy; the writer never mutates this vector in place
+  return true;
+}
+
+std::size_t CosmeticFrameSize() {
+  return g_framePublished.size();
+}
+
+std::size_t CosmeticFrameBytes() {
+  return g_framePublished.size();
+}
+
+bool CosmeticFrameData(std::vector<std::uint8_t> &out) {
+  if (g_framePublished.empty()) {
+    out.clear();
+    return false;
+  }
+  out = g_framePublished;
   return true;
 }
 
 CosmeticFrameHeader ReadCosmeticFrameHeader() {
-  std::lock_guard<std::mutex> lock(g_mutex);
   CosmeticFrameHeader header;
-  if (g_cosmeticFrame.size() < 8) return header;
-  const std::uint8_t *p = g_cosmeticFrame.data();
+  const std::size_t size = g_framePublished.size();
+  if (size < 8) return header;
+  const std::uint8_t *p = g_framePublished.data();
   const std::uint32_t magic = static_cast<std::uint32_t>(p[0]) |
                               (static_cast<std::uint32_t>(p[1]) << 8) |
                               (static_cast<std::uint32_t>(p[2]) << 16) |
