@@ -13,6 +13,7 @@
 #include "pl/cosmetics/NativeCosmeticRenderer.hpp"
 #include "pl/hooks/DobbyHookManager.hpp"
 #include "pl/memory/Vtable.hpp"
+#include "pl/render/RenderDispatch.h"
 #include "pl/runtime/GameCosmetics.h"
 #include "pl/runtime/GameHookRules.h"
 #include "pl/runtime/GameLocalPlayer.h"
@@ -91,6 +92,14 @@ void HookRender(void *a, void *b, void *c, void *d, void *e, void *f, void *g, v
   // matrix is resolved on the build).
   g_lastCosmeticDrawTick.fetch_add(1, std::memory_order_relaxed);
   DrawCosmeticsOnce(cosmetic);
+
+  // Dispatch the public per-frame render callbacks (pl/Render.hpp). This is the seam mods draw
+  // through: it is the same render-thread, GL-context-current point the cosmetics use. Only the
+  // first call of a frame dispatches, so a mod draws once per frame rather than once per rendered
+  // player model.
+  if (g_frameCalls.load(std::memory_order_relaxed) == 1) {
+    ::pl::render::detail::DispatchRenderCallbacks();
+  }
 }
 
 } // namespace
