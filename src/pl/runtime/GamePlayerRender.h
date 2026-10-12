@@ -55,4 +55,20 @@ bool ReadPlayerRenderStats(std::uint32_t out[4]);
  */
 long long LastPlayerRenderMs();
 
+/**
+ * @brief A callback that runs once per frame, after the game's own player render, on the render
+ *        thread with the GL context current.
+ *
+ * This is the single post-render seam. The player-render slot is hooked exactly once (here), and
+ * consumers register into it instead of each installing their own detour on the same slot — two
+ * detours on one function duplicated the frame accounting and made ownership ambiguous.
+ *
+ * The callback runs only for the first render call of a frame (the renderer runs once per rendered
+ * player model), so a consumer draws once per frame rather than once per model.
+ */
+using PostRenderCallback = void (*)();
+
+/** @brief Registers a post-render callback. Registers at most once per function pointer. */
+void RegisterPostRenderCallback(PostRenderCallback callback);
+
 } // namespace pl::runtime

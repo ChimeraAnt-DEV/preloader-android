@@ -530,4 +530,28 @@ uintptr_t resolveSignature(std::string_view signature,
   return it == results.end() ? 0 : it->second;
 }
 
+bool isExecutableAddress(uintptr_t address, std::string_view moduleName) {
+  if (address == 0) return false;
+  FILE *maps = std::fopen("/proc/self/maps", "r");
+  if (!maps) return false;
+  char line[4096];
+  bool executable = false;
+  while (std::fgets(line, sizeof(line), maps)) {
+    if (std::strstr(line, std::string(moduleName).c_str()) == nullptr) continue;
+    uintptr_t start = 0;
+    uintptr_t end = 0;
+    char perms[5] = {};
+    if (std::sscanf(line, "%" SCNxPTR "-%" SCNxPTR " %4s", &start, &end, perms) != 3) {
+      continue;
+    }
+    // The executable bit is perms[2] ('x'); an address inside an r-xp mapping is code.
+    if (perms[2] == 'x' && address >= start && address < end) {
+      executable = true;
+      break;
+    }
+  }
+  std::fclose(maps);
+  return executable;
+}
+
 }

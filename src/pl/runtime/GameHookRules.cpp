@@ -14,6 +14,7 @@
 #include <nlohmann/json.hpp>
 
 #include "pl/Logger.hpp"
+#include "pl/runtime/VersionCompare.hpp"
 
 namespace pl::runtime {
 namespace {
@@ -82,65 +83,7 @@ std::optional<std::size_t> ReadSizeField(const nlohmann::json &object,
   return static_cast<std::size_t>(value);
 }
 
-std::vector<int> ParseVersionParts(std::string_view value) {
-  std::vector<int> parts;
-  long current = 0;
-  bool inNumber = false;
 
-  auto pushPart = [&] {
-    if (!inNumber) {
-      return;
-    }
-    parts.push_back(static_cast<int>(
-        std::min<long>(current, std::numeric_limits<int>::max())));
-    current = 0;
-    inNumber = false;
-  };
-
-  for (unsigned char ch : value) {
-    if (std::isdigit(ch)) {
-      current = std::min<long>(
-          current * 10 + static_cast<long>(ch - '0'),
-          std::numeric_limits<int>::max());
-      inNumber = true;
-    } else {
-      pushPart();
-    }
-  }
-  pushPart();
-  return parts;
-}
-
-// Drops a leading 1. so a two-component version code ("26.52") compares equal to the
-// three-component form the rules use ("1.26.50.00"). Bedrock 1.26.x is the same build as
-// 26.x, and the launcher derives the code from the APK as "26.52" while the bundled rules
-// are written as "1.26.50.00"; without this every range comparison is off by the major part
-// (26 > 1), so a rule that should match is skipped and one that should not may be applied.
-std::vector<int> NormalizeVersionParts(std::string_view value) {
-  auto parts = ParseVersionParts(value);
-  if (!parts.empty() && parts.front() == 1) {
-    parts.erase(parts.begin());
-  }
-  return parts;
-}
-
-int CompareVersions(std::string_view left, std::string_view right) {
-  const auto leftParts = NormalizeVersionParts(left);
-  const auto rightParts = NormalizeVersionParts(right);
-  const size_t count = std::max(leftParts.size(), rightParts.size());
-
-  for (size_t i = 0; i < count; ++i) {
-    const int leftPart = i < leftParts.size() ? leftParts[i] : 0;
-    const int rightPart = i < rightParts.size() ? rightParts[i] : 0;
-    if (leftPart < rightPart) {
-      return -1;
-    }
-    if (leftPart > rightPart) {
-      return 1;
-    }
-  }
-  return 0;
-}
 
 bool RuleMatchesVersion(const nlohmann::json &rule,
                         const std::string &minecraftVersion) {

@@ -12,6 +12,7 @@
 #include "pl/memory/Signature.hpp"
 #include "pl/memory/Vtable.hpp"
 #include "pl/runtime/GameHookRules.h"
+#include "pl/runtime/GamePlayerRender.h"
 #include "pl/runtime/mce_image_hook.hpp"
 
 namespace pl::runtime {
@@ -68,6 +69,13 @@ std::unordered_map<std::uint64_t, CosmeticImage> g_capeMeta;
 std::unordered_map<std::uint64_t, CosmeticImage> g_textureMeta;
 std::vector<std::uint8_t> g_geometry;
 std::uint64_t g_geometryHash = 0;
+
+// Bumped on every registry mutation so the render path can skip a copy when nothing changed.
+std::atomic<std::uint32_t> g_registryVersion{1};
+
+void BumpRegistryVersion() {
+  g_registryVersion.fetch_add(1, std::memory_order_release);
+}
 
 // The per-frame transform buffer (CosmeticFrame wire layout) is double-buffered so the launcher's
 // writer thread never blocks the render thread: the JNI side writes into the *pending* slot while
@@ -161,6 +169,14 @@ bool InstallSlotHook(const char *typeName, std::size_t slot, GenericFn detour,
         label, typeName, slot);
     return false;
   }
+  // The RTTI name resolves on every build, but a slot index can move between builds and land on a
+  // data pointer; detouring that faults. Refuse anything that is not executable code.
+  if (!pl::memory::isExecutableAddress(target, kGameModule)) {
+    preloaderLogger.warn(
+        "Cosmetics {}: {} slot {} is not executable code; skipping the hook",
+        label, typeName, slot);
+    return false;
+  }
   if (pl::memory::hook(reinterpret_cast<pl::memory::FuncPtr>(target),
                        reinterpret_cast<pl::memory::FuncPtr>(detour),
                        reinterpret_cast<pl::memory::FuncPtr *>(original),
@@ -216,14 +232,20 @@ std::uintptr_t ResolveImageLoader() {
 
 void SetCapeOverride(std::uint64_t playerKey, const std::uint8_t *rgba,
                      std::uint32_t width, std::uint32_t height) {
-  std::lock_guard<std::mutex> lock(g_mutex);
-  StoreImage(g_capePixels, g_capeMeta, playerKey, rgba, width, height);
+  {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    StoreImage(g_capePixels, g_capeMeta, playerKey, rgba, width, height);
+  }
+  BumpRegistryVersion();
 }
 
 void ClearCapeOverrides() {
-  std::lock_guard<std::mutex> lock(g_mutex);
-  g_capePixels.clear();
-  g_capeMeta.clear();
+  {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    g_capePixels.clear();
+    g_capeMeta.clear();
+  }
+  BumpRegistryVersion();
 }
 
 const CosmeticImage *FindCapeOverride(std::uint64_t playerKey) {
@@ -242,16 +264,122 @@ const CosmeticImage *FirstCapeOverride() {
   return &g_capeMeta.begin()->second;
 }
 
+std::uint32_t OverrideRegistryVersion() {
+  return g_registryVersion.load(std::memory_order_acquire);
+}
+
+bool CopyCapeOverride(std::uint64_t key, std::vector<std::uint8_t> &out,
+                      std::uint32_t &width, std::uint32_t &height) {
+  std::lock_guard<std::mutex> lock(g_mutex);
+  auto it = g_capePixels.find(key);
+  if (it == g_capePixels.end()) return false;
+  auto meta = g_capeMeta.find(key);
+  out = it->second;
+  width = meta == g_capeMeta.end() ? 0 : meta->second.width;
+  height = meta == g_capeMeta.end() ? 0 : meta->second.height;
+  return !out.empty();
+}
+
+bool CopyTextureOverride(std::uint64_t key, std::vector<std::uint8_t> &out,
+                         std::uint32_t &width, std::uint32_t &height) {
+  std::lock_guard<std::mutex> lock(g_mutex);
+  auto it = g_texturePixels.find(key);
+  if (it == g_texturePixels.end()) return false;
+  auto meta = g_textureMeta.find(key);
+  out = it->second;
+  width = meta == g_textureMeta.end() ? 0 : meta->second.width;
+  height = meta == g_textureMeta.end() ? 0 : meta->second.height;
+  return !out.empty();
+}
+
+bool CopyFirstCapeOverride(std::vector<std::uint8_t> &out, std::uint32_t &width,
+                           std::uint32_t &height) {
+  std::lock_guard<std::mutex> lock(g_mutex);
+  if (g_capePixels.empty()) return false;
+  auto it = g_capePixels.begin();
+  auto meta = g_capeMeta.find(it->first);
+  out = it->second;
+  width = meta == g_capeMeta.end() ? 0 : meta->second.width;
+  height = meta == g_capeMeta.end() ? 0 : meta->second.height;
+  return !out.empty();
+}
+
+// The local player's per-piece atlases: the render path reads these by role (cape/hat/pet) so each
+// piece gets its own texture, instead of all three sharing the first cape override.
+std::vector<std::uint8_t> g_pieceAtlas[3];
+std::uint32_t g_pieceAtlasW[3] = {0, 0, 0};
+std::uint32_t g_pieceAtlasH[3] = {0, 0, 0};
+
+int PieceIndex(CosmeticPiece piece) {
+  return static_cast<int>(piece);
+}
+
+void SetPieceAtlas(CosmeticPiece piece, const std::uint8_t *rgba, std::uint32_t width,
+                   std::uint32_t height) {
+  const int index = PieceIndex(piece);
+  if (index < 0 || index > 2) return;
+  {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (rgba == nullptr || width == 0 || height == 0) {
+      g_pieceAtlas[index].clear();
+      g_pieceAtlasW[index] = 0;
+      g_pieceAtlasH[index] = 0;
+    } else {
+      const std::size_t bytes = static_cast<std::size_t>(width) * height * 4U;
+      g_pieceAtlas[index].assign(rgba, rgba + bytes);
+      g_pieceAtlasW[index] = width;
+      g_pieceAtlasH[index] = height;
+    }
+  }
+  BumpRegistryVersion();
+}
+
+bool CopyPieceAtlas(CosmeticPiece piece, std::vector<std::uint8_t> &out, std::uint32_t &width,
+                    std::uint32_t &height) {
+  const int index = PieceIndex(piece);
+  if (index < 0 || index > 2) return false;
+  std::lock_guard<std::mutex> lock(g_mutex);
+  if (g_pieceAtlas[index].empty()) return false;
+  out = g_pieceAtlas[index];
+  width = g_pieceAtlasW[index];
+  height = g_pieceAtlasH[index];
+  return true;
+}
+
 void SetTextureOverride(std::uint64_t textureId, const std::uint8_t *rgba,
                         std::uint32_t width, std::uint32_t height) {
-  std::lock_guard<std::mutex> lock(g_mutex);
-  StoreImage(g_texturePixels, g_textureMeta, textureId, rgba, width, height);
+  {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    StoreImage(g_texturePixels, g_textureMeta, textureId, rgba, width, height);
+  }
+  BumpRegistryVersion();
 }
 
 void ClearTextureOverrides() {
-  std::lock_guard<std::mutex> lock(g_mutex);
-  g_texturePixels.clear();
-  g_textureMeta.clear();
+  {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    g_texturePixels.clear();
+    g_textureMeta.clear();
+  }
+  BumpRegistryVersion();
+}
+
+void RemoveCapeOverride(std::uint64_t playerKey) {
+  {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    g_capePixels.erase(playerKey);
+    g_capeMeta.erase(playerKey);
+  }
+  BumpRegistryVersion();
+}
+
+void RemoveTextureOverride(std::uint64_t textureId) {
+  {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    g_texturePixels.erase(textureId);
+    g_textureMeta.erase(textureId);
+  }
+  BumpRegistryVersion();
 }
 
 const CosmeticImage *FindTextureOverride(std::uint64_t textureId) {
@@ -384,8 +512,10 @@ void InitCosmeticsHooks(std::size_t skinCapeVtableIndex, std::size_t textureBind
       packetReadVtableIndex != 0 ? packetReadVtableIndex : PacketReadSlotFromRules();
   if (packetSlot == 0) packetSlot = kDefaultPacketReadSlot;
 
-  InstallSlotHook(kSkinTypeName, skinSlot, HookSkinCape, &g_origSkinCape,
-                  g_skinHookInstalled, "skin/cape");
+  // NOTE: the "skin/cape" seam is the LivePlayerRenderer render entry, which the player-render feed
+  // already hooks (and the cosmetics post-render callback rides on). Installing a second passthrough
+  // detour on the same function duplicated the frame accounting and made ownership ambiguous, so it
+  // is deliberately NOT installed here; IsSkinCapeHookLive() reports the render feed's liveness.
   InstallSlotHook(kTextureTypeName, textureSlot, HookTextureBind, &g_origTextureBind,
                   g_textureHookInstalled, "texture-bind");
   InstallSlotHook(kPacketHandlerTypeName, packetSlot, HookPacketRead, &g_origPacketRead,
@@ -429,7 +559,9 @@ bool SwapCapeImage(void *skinRef, const void *image) {
 }
 
 bool IsSkinCapeHookLive() {
-  return g_skinCapeCalls.load(std::memory_order_relaxed) != 0;
+  // The skin/cape seam is the render entry, which the player-render feed owns; report its
+  // liveness rather than a counter that no longer exists.
+  return IsPlayerRenderHookLive();
 }
 
 bool IsTextureHookLive() {
@@ -438,7 +570,7 @@ bool IsTextureHookLive() {
 
 bool ReadCosmeticsStats(std::uint32_t out[4]) {
   if (out == nullptr) return false;
-  out[0] = g_skinCapeCalls.load(std::memory_order_relaxed);
+  out[0] = IsPlayerRenderHookLive() ? 1U : 0U;
   out[1] = g_textureCalls.load(std::memory_order_relaxed);
   out[2] = static_cast<std::uint32_t>(CapeOverrideCount());
   out[3] = static_cast<std::uint32_t>(TextureOverrideCount());

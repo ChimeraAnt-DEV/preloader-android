@@ -179,6 +179,18 @@ constexpr GLint kLinear = 0x2601;
 constexpr GLint kRgba = 0x1908;
 constexpr GLenum kUnsignedByte = 0x1401;
 
+// The state queries. These MUST be the real enum values: the previous code reused the *capability*
+// enums here, so it queried the wrong pnames. glGetIntegerv(GL_CURRENT_PROGRAM == 0x8B31) returned
+// GL_INVALID_ENUM and left 0 in the output, and the restore then did glUseProgram(0) — unbinding the
+// game's program. Likewise glBindVertexArray() was fed a framebuffer id, and the depth mask was read
+// from the wrong pname. Together those corrupted the renderer's state after every frame.
+constexpr GLenum kCurrentProgram = 0x8B8D;      // GL_CURRENT_PROGRAM
+constexpr GLenum kTextureBinding2D = 0x8069;    // GL_TEXTURE_BINDING_2D (not GL_TEXTURE_2D 0x0DE1)
+constexpr GLenum kVertexArrayBinding = 0x85B5;  // GL_VERTEX_ARRAY_BINDING (not GL_VERTEX_SHADER)
+constexpr GLenum kArrayBufferBinding = 0x8894;  // GL_ARRAY_BUFFER_BINDING
+constexpr GLenum kElementArrayBufferBinding = 0x8895; // GL_ELEMENT_ARRAY_BUFFER_BINDING
+constexpr GLenum kDepthWritemask = 0x0B72;      // GL_DEPTH_WRITEMASK (not GL_DEPTH_FUNC 0x0B74)
+
 struct SavedState {
   GLint program = 0;
   GLint texture2d = 0;
@@ -188,21 +200,42 @@ struct SavedState {
   GLboolean blend = GL_FALSE;
   GLboolean depthMask = GL_TRUE;
   GLboolean cull = GL_FALSE;
+  /** True when a sampler was left bound to unit 0; only then is restoring it meaningful. */
+  bool hasSamplerBinding = false;
 };
 
 bool SaveState(const GlesFunctions &gles, SavedState &state) {
   if (!gles.GetIntegerv || !gles.GetBooleanv) return false;
   auto geti = reinterpret_cast<glGetIntegerv_t>(gles.GetIntegerv);
   auto getb = reinterpret_cast<glGetBooleanv_t>(gles.GetBooleanv);
-  geti(0x8B31 /* GL_CURRENT_PROGRAM */, &state.program);
-  geti(0x0BDE /* GL_TEXTURE_BINDING_2D */, &state.texture2d);
-  geti(0x8CA6 /* GL_VERTEX_ARRAY_BINDING */, &state.vao);
-  geti(0x8892 /* GL_ARRAY_BUFFER_BINDING */, &state.arrayBuf);
-  geti(0x8893 /* GL_ELEMENT_ARRAY_BUFFER_BINDING */, &state.elemBuf);
-  getb(0x0BE2 /* GL_BLEND */, &state.blend);
-  getb(0x0B24 /* GL_DEPTH_WRITEMASK */, &state.depthMask);
-  getb(0x0B44 /* GL_CULL_FACE */, &state.cull);
+  geti(kCurrentProgram, &state.program);
+  geti(kArrayBufferBinding, &state.arrayBuf);
+  geti(kElementArrayBufferBinding, &state.elemBuf);
+  geti(kVertexArrayBinding, &state.vao);
+  // The sampler binding is captured so it can be restored only if still live (see
+  // RestoreSamplerBinding); reading it here also tells us whether the game left one bound at unit 0.
+  GLint sampler = 0;
+  geti(kTextureBinding2D, &sampler);
+  state.texture2d = sampler;
+  state.hasSamplerBinding = sampler != 0;
+  getb(kBlend, &state.blend);
+  getb(kDepthWritemask, &state.depthMask);
+  getb(kCullFace, &state.cull);
   return true;
+}
+
+// The sampler binding must be revalidated every frame: the id captured at SaveState can be freed by
+// the game before the restore (a texture the renderer just unloaded), and rebinding a dead name is
+// GL_INVALID_OPERATION. Checking GL_TEXTURE_BINDING_2D matches the id before restoring it is cheap
+// and wrong only if the id was reused for a different texture — the same texture unit, so harmless.
+void RestoreSamplerBinding(const GlesFunctions &gles, GLint expected) {
+  if (expected == 0 || !gles.GetIntegerv || !gles.BindTexture) return;
+  auto geti = reinterpret_cast<glGetIntegerv_t>(gles.GetIntegerv);
+  GLint current = 0;
+  geti(kTextureBinding2D, &current);
+  if (current != expected) return;
+  reinterpret_cast<glBindTexture_t>(gles.BindTexture)(kTexture2D,
+                                                      static_cast<GLuint>(expected));
 }
 
 void RestoreState(const GlesFunctions &gles, const SavedState &state) {
@@ -222,7 +255,9 @@ void RestoreState(const GlesFunctions &gles, const SavedState &state) {
   bindBuf(kArrayBuffer, static_cast<GLuint>(state.arrayBuf));
   bindBuf(kElementArrayBuffer, static_cast<GLuint>(state.elemBuf));
   useProg(static_cast<GLuint>(state.program));
-  bindTex(kTexture2D, static_cast<GLuint>(state.texture2d));
+  // Restore the sampler only if the id is still live; a blind rebind of a freed name is
+  // GL_INVALID_OPERATION and leaves the game's sampler in an unknown state.
+  RestoreSamplerBinding(gles, state.texture2d);
   if (state.blend) enable(kBlend); else disable(kBlend);
   if (state.cull) enable(kCullFace); else disable(kCullFace);
   depthMask(state.depthMask);
@@ -321,28 +356,48 @@ bool EnsureWhiteTexture(const GlesFunctions &gles) {
   return true;
 }
 
-// Uploads the cosmetic atlas once per image dimensions, or reuses the last uploaded one.
-GLuint g_atlasTexture = 0;
-int g_atlasW = 0;
-int g_atlasH = 0;
+// Uploads the cosmetic atlases once per image identity, or reuses the last uploaded ones. Each
+// piece (cape/hat/pet) gets its own texture, because they are distinct catalogued artwork — a single
+// shared atlas drew the hat and pet in the cape's colours.
+struct AtlasSlot {
+  GLuint texture = 0;
+  int width = 0;
+  int height = 0;
+  const std::uint8_t *lastPixels = nullptr;
+};
 
-void EnsureAtlas(const GlesFunctions &gles, const std::uint8_t *rgba, int width, int height) {
-  if (!rgba || width <= 0 || height <= 0) return;
-  if (g_atlasTexture != 0 && g_atlasW == width && g_atlasH == height) return;
+AtlasSlot g_capeAtlas;
+AtlasSlot g_hatAtlas;
+AtlasSlot g_petAtlas;
+
+void UploadAtlas(const GlesFunctions &gles, AtlasSlot &slot, const PieceAtlas &atlas) {
+  if (!atlas.rgba || atlas.width <= 0 || atlas.height <= 0) return;
+  // Skip when the same buffer pointer and dimensions are unchanged (the launcher reuses its copy
+  // for the whole frame), so we do not re-upload an unchanged texture every frame.
+  if (slot.texture != 0 && slot.lastPixels == atlas.rgba && slot.width == atlas.width &&
+      slot.height == atlas.height) {
+    return;
+  }
   if (!gles.GenTextures || !gles.BindTexture || !gles.TexParameteri || !gles.TexImage2D) return;
   auto gen = reinterpret_cast<glGenTextures_t>(gles.GenTextures);
   auto bind = reinterpret_cast<glBindTexture_t>(gles.BindTexture);
   auto param = reinterpret_cast<glTexParameteri_t>(gles.TexParameteri);
   auto image = reinterpret_cast<glTexImage2D_t>(gles.TexImage2D);
-  if (g_atlasTexture == 0) gen(1, &g_atlasTexture);
-  bind(kTexture2D, g_atlasTexture);
+  if (slot.texture == 0) gen(1, &slot.texture);
+  bind(kTexture2D, slot.texture);
   param(kTexture2D, 0x2802, kLinear);
   param(kTexture2D, 0x2803, kLinear);
   param(kTexture2D, 0x2800, kClampToEdge);
   param(kTexture2D, 0x2801, kClampToEdge);
-  image(kTexture2D, 0, kRgba, width, height, 0, kRgba, kUnsignedByte, rgba);
-  g_atlasW = width;
-  g_atlasH = height;
+  image(kTexture2D, 0, kRgba, atlas.width, atlas.height, 0, kRgba, kUnsignedByte, atlas.rgba);
+  slot.width = atlas.width;
+  slot.height = atlas.height;
+  slot.lastPixels = atlas.rgba;
+}
+
+GLuint AtlasTexture(const GlesFunctions &gles, AtlasSlot &slot, const PieceAtlas &atlas) {
+  UploadAtlas(gles, slot, atlas);
+  return slot.texture != 0 ? slot.texture : g_whiteTexture;
 }
 
 /**
@@ -381,6 +436,15 @@ geometry::Mesh RotateMeshByBoneMatrix(const geometry::Mesh &mesh, const Vec3 &pi
 
 static std::atomic<bool> g_initAttempted{false};
 static std::atomic<bool> g_initOk{false};
+static std::atomic<std::uint32_t> g_drawCount{0};
+
+// One Bedrock model pixel is 1/16 block. Without this the geometry is drawn in raw model pixels —
+// 16x too large. Applied to every piece's anchor so the meshes sit at the player's real scale.
+constexpr float kModelPixelToBlocks = 1.0F / 16.0F;
+
+std::uint32_t NativeCosmeticRenderer::drawCount() {
+  return g_drawCount.load(std::memory_order_relaxed);
+}
 
 bool NativeCosmeticRenderer::init() {
   if (g_initAttempted.exchange(true)) return g_initOk.load();
@@ -391,10 +455,24 @@ bool NativeCosmeticRenderer::init() {
   return ok;
 }
 
+// Persistent GL objects, created once and reused every frame. The old code created and deleted a
+// VAO and two buffers per piece per frame — thousands of allocations a second on the render thread.
+namespace {
+struct MeshBuffers {
+  GLuint vao = 0;
+  GLuint vbo = 0;
+  GLuint ibo = 0;
+  std::size_t vboCapacity = 0;  // bytes
+  std::size_t iboCapacity = 0;
+};
+MeshBuffers g_meshBuffers;
+
+std::vector<float> g_interleavedScratch;
+} // namespace
+
 CosmeticDrawResult NativeCosmeticRenderer::drawFrame(std::span<const std::uint8_t> frame,
                                                      std::span<const std::uint8_t> geometryBlob,
-                                                     const std::uint8_t *atlasPixels,
-                                                     int atlasWidth, int atlasHeight,
+                                                     const CosmeticAtlases &atlases,
                                                      const Mat4 &world) {
   if (!g_initOk.load()) return CosmeticDrawResult::Skipped;
   const GlesFunctions gles = g_gles;
@@ -417,7 +495,6 @@ CosmeticDrawResult NativeCosmeticRenderer::drawFrame(std::span<const std::uint8_
   // Prepare the shader + textures (idempotent, guarded).
   if (!EnsureProgram(gles)) return CosmeticDrawResult::Skipped;
   if (!EnsureWhiteTexture(gles)) return CosmeticDrawResult::Skipped;
-  EnsureAtlas(gles, atlasPixels, atlasWidth, atlasHeight);
 
   SavedState state{};
   if (!SaveState(gles, state)) return CosmeticDrawResult::Skipped;
@@ -440,8 +517,6 @@ CosmeticDrawResult NativeCosmeticRenderer::drawFrame(std::span<const std::uint8_
   auto enableAttrib = reinterpret_cast<glEnableVertexAttribArray_t>(gles.EnableVertexAttribArray);
   auto attribPointer = reinterpret_cast<glVertexAttribPointer_t>(gles.VertexAttribPointer);
   auto drawElements = reinterpret_cast<glDrawElements_t>(gles.DrawElements);
-  auto deleteBuffers = reinterpret_cast<glDeleteBuffers_t>(gles.DeleteBuffers);
-  auto deleteVao = reinterpret_cast<glDeleteVertexArrays_t>(gles.DeleteVertexArrays);
 
   // Set draw state: transparent cosmetics alpha-blend, depth write on so they occlude correctly
   // against the body, double-sided so the inside of a hat/pet face is not culled.
@@ -452,84 +527,107 @@ CosmeticDrawResult NativeCosmeticRenderer::drawFrame(std::span<const std::uint8_
   activeTex(kTexture0);
   useProg(g_program);
 
-  auto bindAtlas = reinterpret_cast<glBindTexture_t>(gles.BindTexture);
-  const GLuint texture = g_atlasTexture != 0 ? g_atlasTexture : g_whiteTexture;
-  bindAtlas(kTexture2D, texture);
   const GLint locMvp = getUniform(g_program, "uMVP");
   const GLint locColor = getUniform(g_program, "uColor");
   const GLint locTex = getUniform(g_program, "uTexture");
+  if (locTex >= 0 && gles.Uniform1i) {
+    reinterpret_cast<glUniform1i_t>(gles.Uniform1i)(locTex, 0);
+  }
 
-  bool drew = false;
-
-  // Helper: upload a mesh and issue a draw.
-  auto drawOne = [&](const geometry::Mesh &mesh, const Mat4 &mvp, float r, float g, float b, float a) {
-    if (mesh.vertices.empty() || mesh.indices.empty()) return false;
-    const size_t verts = mesh.vertices.size();
-
-    // Interleaved position (vec3) + uv (vec2), stride 20 bytes.
-    std::vector<float> interleaved(verts * 5);
-    for (size_t i = 0; i < verts; ++i) {
-      interleaved[i * 5 + 0] = mesh.vertices[i].position.x;
-      interleaved[i * 5 + 1] = mesh.vertices[i].position.y;
-      interleaved[i * 5 + 2] = mesh.vertices[i].position.z;
-      interleaved[i * 5 + 3] = mesh.vertices[i].uv.x;
-      interleaved[i * 5 + 4] = mesh.vertices[i].uv.y;
-    }
-
-    GLuint vbo = 0, ibo = 0, vao = 0;
-    genBuffers(1, &vbo);
-    bindBuffer(kArrayBuffer, vbo);
-    bufferData(kArrayBuffer, static_cast<GLsizeiptr>(interleaved.size() * sizeof(float)),
-               interleaved.data(), kStreamDraw);
-    genBuffers(1, &ibo);
-    bindBuffer(kElementArrayBuffer, ibo);
-    bufferData(kElementArrayBuffer,
-               static_cast<GLsizeiptr>(mesh.indices.size() * sizeof(std::uint32_t)),
-               mesh.indices.data(), kStreamDraw);
-    genVao(1, &vao);
-    bindVao(vao);
-    bindBuffer(kArrayBuffer, vbo);
-    bindBuffer(kElementArrayBuffer, ibo);
+  // Create the persistent mesh buffers once.
+  if (g_meshBuffers.vao == 0) {
+    genBuffers(1, &g_meshBuffers.vbo);
+    genBuffers(1, &g_meshBuffers.ibo);
+    genVao(1, &g_meshBuffers.vao);
+    bindVao(g_meshBuffers.vao);
+    bindBuffer(kArrayBuffer, g_meshBuffers.vbo);
+    bindBuffer(kElementArrayBuffer, g_meshBuffers.ibo);
     enableAttrib(0);
     attribPointer(0, 3, kFloat, GL_FALSE, 20, nullptr);
     enableAttrib(1);
-    attribPointer(1, 2, kFloat, GL_FALSE, 20,
-                  reinterpret_cast<const void *>(12));
+    attribPointer(1, 2, kFloat, GL_FALSE, 20, reinterpret_cast<const void *>(12));
+    bindVao(0);
+  }
+
+  bool drew = false;
+
+  // Helper: upload a mesh into the persistent buffers and issue a draw with the given texture.
+  auto drawOne = [&](const geometry::Mesh &mesh, const Mat4 &mvp, AtlasSlot &slot,
+                     const PieceAtlas &atlas, float r, float g, float b, float a) {
+    if (mesh.vertices.empty() || mesh.indices.empty()) return false;
+    const size_t verts = mesh.vertices.size();
+    const size_t vboBytes = verts * 5 * sizeof(float);
+    const size_t iboBytes = mesh.indices.size() * sizeof(std::uint32_t);
+    if (vboBytes > static_cast<size_t>(PTRDIFF_MAX) || iboBytes > static_cast<size_t>(PTRDIFF_MAX)) {
+      return false;
+    }
+
+    // Interleaved position (vec3) + uv (vec2), stride 20 bytes, into the reused scratch.
+    g_interleavedScratch.resize(verts * 5);
+    for (size_t i = 0; i < verts; ++i) {
+      g_interleavedScratch[i * 5 + 0] = mesh.vertices[i].position.x;
+      g_interleavedScratch[i * 5 + 1] = mesh.vertices[i].position.y;
+      g_interleavedScratch[i * 5 + 2] = mesh.vertices[i].position.z;
+      g_interleavedScratch[i * 5 + 3] = mesh.vertices[i].uv.x;
+      g_interleavedScratch[i * 5 + 4] = mesh.vertices[i].uv.y;
+    }
+
+    bindVao(g_meshBuffers.vao);
+    bindBuffer(kArrayBuffer, g_meshBuffers.vbo);
+    // STREAM_DRAW, since the mesh contents change per frame; just re-specify the store.
+    bufferData(kArrayBuffer, static_cast<GLsizeiptr>(vboBytes), g_interleavedScratch.data(),
+               kStreamDraw);
+    bindBuffer(kElementArrayBuffer, g_meshBuffers.ibo);
+    bufferData(kElementArrayBuffer, static_cast<GLsizeiptr>(iboBytes), mesh.indices.data(),
+               kStreamDraw);
+
+    bindTex(kTexture2D, AtlasTexture(gles, slot, atlas));
 
     if (locMvp >= 0) uniformMvp(locMvp, 1, GL_FALSE, mvp.m);
     if (locColor >= 0 && uniformColor) uniformColor(locColor, r, g, b, a);
-    if (locTex >= 0 && gles.Uniform1i) {
-      reinterpret_cast<glUniform1i_t>(gles.Uniform1i)(locTex, 0);
-    }
 
     drawElements(kTriangles, static_cast<GLsizei>(mesh.indices.size()), kUnsignedInt, nullptr);
-
-    bindVao(0);
-    deleteVao(1, &vao);
-    deleteBuffers(1, &ibo);
-    deleteBuffers(1, &vbo);
+    g_drawCount.fetch_add(1, std::memory_order_relaxed);
     return true;
+  };
+
+  // Bedrock-authored cosmetic geometry faces -Z; the player model faces +Z. A half-turn about Y
+  // converts one to the other, so a hat's brim points forward and a pet faces the direction the
+  // player faces. The cape chain already bakes its own facing into its bones, so it is NOT converted.
+  const Mat4 bedrockToPlayer = Mat4::rotationY(180.0F);
+
+  auto scaledAnchor = [&](const Mat4 &local) {
+    Mat4 scale;
+    scale.m[0] = kModelPixelToBlocks;
+    scale.m[5] = kModelPixelToBlocks;
+    scale.m[10] = kModelPixelToBlocks;
+    scale.m[15] = 1.0F;
+    return Mat4::multiply(world, Mat4::multiply(local, scale));
   };
 
   // --- Cape -----------------------------------------------------------------------------
   if ((flags & 0x1u) && !geometryBlob.empty()) {
     auto pieces = ParseGeometryForPiece(geometryBlob, "geometry.chimera_cape");
+    // The cape sits behind the player's back, anchored at the shoulders (model y=24 px = 1.5 blocks).
+    const Mat4 local = Mat4::translation(Vec3{0.0F, 24.0F * kModelPixelToBlocks,
+                                              -0.4F * kModelPixelToBlocks});
     for (auto &piece : pieces) {
-      // The cape sits behind the player's back, anchored at the shoulders in model units.
-      Mat4 capeMvp = Mat4::multiply(world, Mat4::translation(Vec3{0, 24.0F, -0.4F}));
-      drew |= drawOne(piece.mesh, capeMvp, 1.0F, 1.0F, 1.0F, 0.95F);
+      drew |= drawOne(piece.mesh, scaledAnchor(local), g_capeAtlas, atlases.cape,
+                      1.0F, 1.0F, 1.0F, 0.95F);
     }
   }
 
   // --- Hat ------------------------------------------------------------------------------
   if ((flags & 0x2u) && accessoryKind > 0 && !geometryBlob.empty()) {
     auto pieces = ParseGeometryForPiece(geometryBlob, "geometry.chimera_hat");
+    // The hat is anchored to the head crown and turns with the head look.
+    const Mat4 headLook = Mat4::multiply(Mat4::rotationY(headYaw), Mat4::rotationX(headPitch));
+    const Mat4 local = Mat4::multiply(
+        Mat4::multiply(Mat4::translation(Vec3{0.0F, 32.0F * kModelPixelToBlocks, 0.0F}), headLook),
+        bedrockToPlayer);
     for (auto &piece : pieces) {
-      // The hat is anchored to the head crown and turns with the head look.
-      Mat4 headLook = Mat4::multiply(Mat4::rotationY(headYaw), Mat4::rotationX(headPitch));
-      Mat4 hatMvp = Mat4::multiply(world,
-                                   Mat4::multiply(Mat4::translation(Vec3{0, 32.0F, 0}), headLook));
-      drew |= drawOne(piece.mesh, hatMvp, 1.0F, 1.0F, 1.0F, 1.0F);
+      drew |= drawOne(piece.mesh, scaledAnchor(local), g_hatAtlas, atlases.hat,
+                      1.0F, 1.0F, 1.0F, 1.0F);
     }
   }
 
@@ -539,6 +637,7 @@ CosmeticDrawResult NativeCosmeticRenderer::drawFrame(std::span<const std::uint8_
     // Look up the frame's per-bone rotation matrix by name.
     std::unordered_map<std::string, Mat4> rotByBone;
     for (const auto &entry : petBones) rotByBone[entry.first] = entry.second;
+    const Mat4 local = Mat4::multiply(petOffset, bedrockToPlayer);
     for (auto &piece : pieces) {
       geometry::Mesh mesh = piece.mesh;
       // Apply the per-bone animation offset about the bone's pivot on the CPU, then upload.
@@ -546,14 +645,19 @@ CosmeticDrawResult NativeCosmeticRenderer::drawFrame(std::span<const std::uint8_
       if (it != rotByBone.end() && piece.hasPivot) {
         mesh = RotateMeshByBoneMatrix(mesh, piece.pivot, it->second);
       }
-      Mat4 petMvp = Mat4::multiply(world, petOffset);
-      drew |= drawOne(mesh, petMvp, 1.0F, 1.0F, 1.0F, 1.0F);
+      drew |= drawOne(mesh, scaledAnchor(local), g_petAtlas, atlases.pet,
+                      1.0F, 1.0F, 1.0F, 1.0F);
     }
   }
 
+  bindVao(0);
   RestoreState(gles, state);
-  preloaderLogger.debug("Native cosmetic renderer: {}", drew ? "drew cosmetics" : "nothing drawn");
-  return drew ? CosmeticDrawResult::Drawn : CosmeticDrawResult::Skipped;
+  if (drew) {
+    preloaderLogger.debug("Native cosmetic renderer: drew cosmetic meshes");
+    return CosmeticDrawResult::Drawn;
+  }
+  preloaderLogger.debug("Native cosmetic renderer: nothing drawn");
+  return CosmeticDrawResult::Skipped;
 }
 
 } // namespace pl::cosmetics

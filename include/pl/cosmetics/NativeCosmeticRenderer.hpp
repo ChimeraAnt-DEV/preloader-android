@@ -61,6 +61,29 @@ enum class CosmeticDrawResult {
 };
 
 /**
+ * @brief One piece's texture atlas (raw RGBA). A null pointer means "no texture" and the piece is
+ *        drawn flat with its fallback colour.
+ */
+struct PieceAtlas {
+  const std::uint8_t *rgba = nullptr;
+  int width = 0;
+  int height = 0;
+};
+
+/**
+ * @brief The per-piece atlases the renderer uploads.
+ *
+ * The cape, hat and pet are separate catalogued pieces with separate textures; keying them together
+ * (the previous single-atlas design bound the first cape override to all three) drew a hat and a pet
+ * in the cape's colours. Each piece selects its own here.
+ */
+struct CosmeticAtlases {
+  PieceAtlas cape;
+  PieceAtlas hat;
+  PieceAtlas pet;
+};
+
+/**
  * @brief The runtime-resolved GLES entry points the renderer needs.
  *
  * Resolved once from the game's active GLES library; a null entry point makes that primitive a
@@ -169,8 +192,16 @@ public:
    */
   static CosmeticDrawResult drawFrame(std::span<const std::uint8_t> frame,
                                       std::span<const std::uint8_t> geometryBlob,
-                                      const std::uint8_t *atlasPixels,
-                                      int atlasWidth, int atlasHeight, const Mat4 &world);
+                                      const CosmeticAtlases &atlases,
+                                      const Mat4 &world);
+
+  /**
+   * @brief The number of piece draws issued this session.
+   *
+   * Incremented per piece actually rasterised, so the launcher can distinguish "the hook fired" from
+   * "a mesh was drawn" — the status line must not claim a draw on the hook alone.
+   */
+  static std::uint32_t drawCount();
 };
 
 } // namespace pl::cosmetics

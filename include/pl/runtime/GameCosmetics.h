@@ -68,8 +68,57 @@ void SetTextureOverride(std::uint64_t textureId, const std::uint8_t *rgba,
 /** Clears every texture override. */
 void ClearTextureOverrides();
 
+/** Removes one cape override, leaving every other player's intact. */
+void RemoveCapeOverride(std::uint64_t playerKey);
+
+/** Removes one texture override, leaving every other entry intact. */
+void RemoveTextureOverride(std::uint64_t textureId);
+
 /** The override pixels for a texture id, or nullptr when none. */
 const CosmeticImage *FindTextureOverride(std::uint64_t textureId);
+
+/**
+ * @brief A monotonically increasing counter bumped on every registry mutation.
+ *
+ * The render thread reads textures once per frame; comparing this counter lets it skip the copy
+ * when nothing changed, so it never takes the registry mutex on an idle frame.
+ */
+std::uint32_t OverrideRegistryVersion();
+
+/**
+ * @brief Copies a cape override's pixels into @p out under the registry lock.
+ *
+ * The pointer-returning accessors hand back an address that another thread can erase from under the
+ * caller (the map rehashes), so the render path uses these copy accessors instead. Returns false
+ * when the key is absent.
+ */
+bool CopyCapeOverride(std::uint64_t key, std::vector<std::uint8_t> &out,
+                      std::uint32_t &width, std::uint32_t &height);
+
+/** Copies a texture override's pixels under the lock. Returns false when the key is absent. */
+bool CopyTextureOverride(std::uint64_t key, std::vector<std::uint8_t> &out,
+                         std::uint32_t &width, std::uint32_t &height);
+
+/** Copies the first cape override's pixels under the lock (the local-player atlas fallback). */
+bool CopyFirstCapeOverride(std::vector<std::uint8_t> &out, std::uint32_t &width,
+                           std::uint32_t &height);
+
+/** @brief The local player's cosmetic pieces, each with its own texture. */
+enum class CosmeticPiece { Cape = 0, Hat = 1, Pet = 2 };
+
+/**
+ * @brief Stores the local player's texture for one piece.
+ *
+ * A dedicated per-piece slot rather than the id-keyed texture map: the cape, hat and pet are
+ * distinct pieces whose textures the render path needs by role, not by catalogue id, and keying them
+ * together drew the hat and pet in the cape's colours. A null image clears the slot.
+ */
+void SetPieceAtlas(CosmeticPiece piece, const std::uint8_t *rgba, std::uint32_t width,
+                   std::uint32_t height);
+
+/** Copies a piece's local texture out under the lock. Returns false when the slot is empty. */
+bool CopyPieceAtlas(CosmeticPiece piece, std::vector<std::uint8_t> &out, std::uint32_t &width,
+                    std::uint32_t &height);
 
 /** Number of texture overrides currently registered. */
 std::size_t TextureOverrideCount();

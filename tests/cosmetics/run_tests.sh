@@ -54,4 +54,7 @@ compile_run NativeCosmeticDataTest \
   "$root/src/pl/cosmetics/geometry/BedrockModelParser.cpp" \
   "$here/NativeCosmeticDataTest.cpp"
 
+compile_run VersionCompareTest \
+  "$here/VersionCompareTest.cpp"
+
 echo "all cosmetics host tests passed"

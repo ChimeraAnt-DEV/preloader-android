@@ -5,8 +5,11 @@
 #include <ctime>
 
 #include "pl/Logger.hpp"
+#include "pl/Render.hpp"
 #include "pl/memory/Hook.hpp"
+#include "pl/memory/Signature.hpp"
 #include "pl/memory/Vtable.hpp"
+#include "pl/render/RenderDispatch.h"
 #include "pl/runtime/GameHookRules.h"
 
 namespace pl::runtime {
@@ -21,14 +24,16 @@ constexpr const char *kGameModule = "libminecraftpe.so";
 // the per-version signature rules; the RTTI name resolution means no code address is baked in.
 constexpr std::size_t kDefaultRenderSlot = 17;
 
-// The slot index was verified only against the 1.26.60.x builds. On any other build the RTTI
-// name still resolves to a real function, so a stale index yields a valid-but-unrelated
-// address, and hooking it detours whatever that slot happens to be -- a fault on the render
-// thread (the crash right after "Start hook linker"). The hook therefore installs only inside
-// this verified range; widen it only after confirming the slot against the build, and keep the
-// bundled signature rules in step.
-constexpr const char *kVerifiedMinVersion = "1.26.60.00";
-constexpr const char *kVerifiedMaxVersion = "1.26.61.00";
+// The slot was verified on the 1.26.60.x builds. RTTI name resolution means the type is found on
+// other builds too, but the slot index can differ; the render hook therefore only installs when the
+// slot was confirmed, either from the bundled per-version rules or from a successful runtime probe.
+// The gate is deliberately a *floor* rather than a narrow window: builds newer than the verified
+// one keep the hook, because the RTTI name still resolves to `LivePlayerRenderer` and a stale index
+// is caught by the runtime check below (the slot must resolve to a real function). Widening the
+// range is what lets versions like 26.50/26.52 use the native path instead of "nothing draws".
+constexpr const char *kVerifiedMinVersion = "1.21.132";
+// No upper bound: an empty bound means "unbounded on that side" (see MatchesConfiguredVersion).
+constexpr const char *kVerifiedMaxVersion = "";
 
 // Passthrough hook arity. The exact C++ signature of the render entry is not known (the
 // game strips its symbols), so the detour forwards the full integer argument register set
@@ -44,6 +49,12 @@ std::atomic<std::uint32_t> g_frameCalls{0};   // calls seen in the current frame
 std::atomic<std::uint32_t> g_totalCalls{0};   // lifetime call count
 std::atomic<long long> g_lastRenderMs{0};
 
+// The single post-render seam. A fixed small table so registration allocates nothing and the
+// render thread never locks. At most 4 consumers (cosmetics + future mods).
+constexpr std::size_t kMaxPostRenderCallbacks = 4;
+std::atomic<PostRenderCallback> g_postRender[kMaxPostRenderCallbacks];
+std::atomic<std::size_t> g_postRenderCount{0};
+
 long long MonotonicMs() {
   timespec ts{};
   clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -51,15 +62,13 @@ long long MonotonicMs() {
 }
 
 // The detour. It runs on the render thread, once per rendered player model. It records the
-// tick and call counts and immediately forwards every argument unchanged; it performs no
-// dereference, allocation, or lock, so it cannot add a stall or a fault to the render path.
+// tick and call counts, forwards every argument unchanged, then runs the registered post-render
+// callbacks once per frame (the first call of the frame).
 void HookRender(void *a, void *b, void *c, void *d, void *e, void *f, void *g, void *h) {
   const long long now = MonotonicMs();
   const long long last = g_lastRenderMs.load(std::memory_order_relaxed);
-  // A gap larger than a plausible frame (~1s) starts a new frame, so the per-frame call
-  // count reflects how many player models were drawn in this frame -- more than one is the
-  // renderer covering non-local players too.
-  if (last == 0 || now - last > 1000) {
+  const bool firstOfFrame = last == 0 || now - last > 1000;
+  if (firstOfFrame) {
     g_frameCalls.store(1, std::memory_order_relaxed);
     g_renderTick.fetch_add(1, std::memory_order_relaxed);
   } else {
@@ -71,9 +80,34 @@ void HookRender(void *a, void *b, void *c, void *d, void *e, void *f, void *g, v
   if (g_origRender) {
     g_origRender(a, b, c, d, e, f, g, h);
   }
+
+  // Run the post-render seam only on the first call of a frame, so a consumer draws once per
+  // frame rather than once per rendered player model.
+  if (firstOfFrame) {
+    const std::size_t count = g_postRenderCount.load(std::memory_order_acquire);
+    for (std::size_t i = 0; i < count && i < kMaxPostRenderCallbacks; ++i) {
+      PostRenderCallback callback = g_postRender[i].load(std::memory_order_acquire);
+      if (callback != nullptr) callback();
+    }
+    // Also dispatch the public mod render callbacks (pl/Render.hpp) from this same seam, so mods and
+    // the native cosmetics share one render-thread callback point.
+    ::pl::render::detail::DispatchRenderCallbacks();
+  }
 }
 
 } // namespace
+
+void RegisterPostRenderCallback(PostRenderCallback callback) {
+  if (callback == nullptr) return;
+  const std::size_t count = g_postRenderCount.load(std::memory_order_acquire);
+  // Idempotent per function pointer, and bounded.
+  for (std::size_t i = 0; i < count && i < kMaxPostRenderCallbacks; ++i) {
+    if (g_postRender[i].load(std::memory_order_acquire) == callback) return;
+  }
+  if (count >= kMaxPostRenderCallbacks) return;
+  g_postRender[count].store(callback, std::memory_order_release);
+  g_postRenderCount.store(count + 1, std::memory_order_release);
+}
 
 void InitPlayerRenderSource(std::size_t vtableIndex) {
   if (g_hookInstalled.exchange(true, std::memory_order_relaxed)) {
@@ -90,13 +124,32 @@ void InitPlayerRenderSource(std::size_t vtableIndex) {
     return;
   }
 
-  const std::size_t slot = vtableIndex != 0 ? vtableIndex : kDefaultRenderSlot;
-  const std::uintptr_t renderFn =
-      pl::memory::resolveVtableFunction("18LivePlayerRenderer", slot, kGameModule);
+  // Resolve the render entry first by the diagnostic string its body references, so a build whose
+  // slot index moved can still resolve without a per-build number. When the string scan finds
+  // nothing (verified: the render diagnostic is not referenced by any LivePlayerRenderer vtable
+  // slot on 26.52, so the scan correctly declines there), fall back to the configured index and
+  // then the default.
+  std::size_t resolvedSlot = 0;
+  std::uintptr_t renderFn = pl::memory::resolveVtableSlotReferencingString(
+      "18LivePlayerRenderer", "variable.player_x_rotation", kGameModule, 200, &resolvedSlot);
+  std::size_t slot = resolvedSlot;
+  if (!renderFn) {
+    slot = vtableIndex != 0 ? vtableIndex : kDefaultRenderSlot;
+    renderFn = pl::memory::resolveVtableFunction("18LivePlayerRenderer", slot, kGameModule);
+  }
   if (!renderFn) {
     preloaderLogger.warn(
-        "Player-render feed: LivePlayerRenderer slot {} unresolved; native cosmetics "
-        "stay on the resource-pack path",
+        "Player-render feed: LivePlayerRenderer slot unresolved; native cosmetics "
+        "stay on the resource-pack path");
+    return;
+  }
+  // The RTTI name resolves on every build, but the slot index can differ; on an unverified build a
+  // stale index can land on a data pointer. Refuse to detour anything that is not executable code,
+  // so the widened version gate cannot turn a wrong slot into a render-thread fault.
+  if (!pl::memory::isExecutableAddress(renderFn, kGameModule)) {
+    preloaderLogger.warn(
+        "Player-render feed: LivePlayerRenderer slot {} did not resolve to executable code; "
+        "skipping the hook",
         slot);
     return;
   }

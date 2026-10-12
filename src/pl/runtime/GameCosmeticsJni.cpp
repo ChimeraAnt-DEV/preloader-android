@@ -70,6 +70,18 @@ Java_org_chimeramc_client_preloader_PreloaderInput_nativeClearTextureOverrides(J
   pl::runtime::ClearTextureOverrides();
 }
 
+JNIEXPORT void JNICALL
+Java_org_chimeramc_client_preloader_PreloaderInput_nativeRemoveCapeOverride(JNIEnv *, jclass,
+                                                                            jlong playerKey) {
+  pl::runtime::RemoveCapeOverride(static_cast<std::uint64_t>(playerKey));
+}
+
+JNIEXPORT void JNICALL
+Java_org_chimeramc_client_preloader_PreloaderInput_nativeRemoveTextureOverride(JNIEnv *, jclass,
+                                                                               jlong textureId) {
+  pl::runtime::RemoveTextureOverride(static_cast<std::uint64_t>(textureId));
+}
+
 JNIEXPORT jint JNICALL
 Java_org_chimeramc_client_preloader_PreloaderInput_nativeTextureOverrideCount(JNIEnv *, jclass) {
   return static_cast<jint>(pl::runtime::TextureOverrideCount());
@@ -150,6 +162,36 @@ Java_org_chimeramc_client_preloader_PreloaderInput_nativeIsRendererDrawable(JNIE
   // unavailable, so the honest status is "not drawable" even though the hook fires.
   return (pl::cosmetics::IsNativeCosmeticRenderHookLive() && pl::cosmetics::NativeCosmeticRenderer::init())
              ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jint JNICALL
+Java_org_chimeramc_client_preloader_PreloaderInput_nativeCosmeticDrawCount(JNIEnv *, jclass) {
+  return static_cast<jint>(pl::cosmetics::NativeCosmeticRenderer::drawCount());
+}
+
+// The per-piece local atlases. Java hands each piece its own texture so the cape, hat and pet are
+// not all drawn with the cape's artwork.
+JNIEXPORT void JNICALL
+Java_org_chimeramc_client_preloader_PreloaderInput_nativeSetPieceAtlas(
+    JNIEnv *env, jclass, jint piece, jbyteArray rgba, jint width, jint height) {
+  if (piece < 0 || piece > 2) return;
+  const auto kind = static_cast<pl::runtime::CosmeticPiece>(piece);
+  if (rgba == nullptr || width <= 0 || height <= 0) {
+    pl::runtime::SetPieceAtlas(kind, nullptr, 0, 0);
+    return;
+  }
+  const std::size_t expected = static_cast<std::size_t>(width) *
+                               static_cast<std::size_t>(height) * 4U;
+  std::vector<std::uint8_t> pixels = CopyBytes(env, rgba, expected);
+  pl::runtime::SetPieceAtlas(kind, pixels.data(), static_cast<std::uint32_t>(width),
+                             static_cast<std::uint32_t>(height));
+}
+
+JNIEXPORT void JNICALL
+Java_org_chimeramc_client_preloader_PreloaderInput_nativeClearPieceAtlases(JNIEnv *, jclass) {
+  pl::runtime::SetPieceAtlas(pl::runtime::CosmeticPiece::Cape, nullptr, 0, 0);
+  pl::runtime::SetPieceAtlas(pl::runtime::CosmeticPiece::Hat, nullptr, 0, 0);
+  pl::runtime::SetPieceAtlas(pl::runtime::CosmeticPiece::Pet, nullptr, 0, 0);
 }
 
 JNIEXPORT jintArray JNICALL

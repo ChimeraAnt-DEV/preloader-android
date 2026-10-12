@@ -10,10 +10,30 @@ actually renders the player with, and so the same hook runs for non-local player
 
 ## Hook point
 
-**`LivePlayerRenderer::render`**, primary-vtable **slot 17**, reached by RTTI name through
-`resolveVtableFunction("18LivePlayerRenderer", 17, "libminecraftpe.so")` — the same
+**`LivePlayerRenderer::render`**, reached by RTTI name
+`resolveVtableFunction("18LivePlayerRenderer", slot, "libminecraftpe.so")` — the same
 name-resolution mechanism the local-player feed uses for `ClientInstance` slot 31. No
 per-build code address is baked in.
+
+### The slot index moves between builds — resolve it at runtime, do not hardcode it
+
+The primary-vtable slot for `render` is **not stable across builds**: it was verified as slot
+**17** on the 1.26.60.x binaries, and on **26.52** slot 17 is null and the render diagnostic is
+not referenced by a `LivePlayerRenderer` vtable slot at all. A hardcoded index is therefore
+correct for exactly one build.
+
+The hook resolves the slot at runtime in two steps:
+
+1. `pl::memory::resolveVtableSlotReferencingString("18LivePlayerRenderer",
+   "variable.player_x_rotation", ...)` — finds the slot whose function body references the
+   render diagnostic via an `adrp`/`add` pair, which needs no per-build index.
+2. If that finds nothing, fall back to the per-version `playerRenderVtableIndex` rule, then the
+   built-in default (17).
+
+Before any detour is installed, `pl::memory::isExecutableAddress()` confirms the resolved
+address lies in an executable mapping — a stale index that lands in data is refused rather than
+hooked. The install also only runs on builds at or above the floor version (1.21.132); newer
+builds keep the attempt because the guard, not a version allowlist, is what makes it safe.
 
 ### How it was identified (method: RTTI name → vtable → string scan)
 
@@ -21,13 +41,12 @@ per-build code address is baked in.
    any other typeinfo name (the in-repo `resolveVtableFunction` finds its typeinfo in
    `.data.rel.ro` via the `R_AARCH64_RELATIVE` relocation, then reads the primary vtable).
 2. Dumping the vtable and scanning each slot function's `adrp`/`add` string references
-   isolates the render entry: **slot 17** is the only slot whose body references
+   isolates the render entry: on 1.26.60.x **slot 17** is the only slot whose body references
    `variable.player_x_rotation`, `variable.is_first_person` and `variable.is_using_vr` — the
-   Molang/pose variables a player-model render routine sets. `MobRenderer` (slot 17,
-   `0xaeaefb4`) and `DataDrivenRenderer` (slot 3) are the parallel entries for other actor
-   kinds, which is the expected vtable shape for a renderer family.
-3. Slot 17's body is a large routine that begins with a `stp d15, d14, [sp, #-0xa0]!` SIMD
-   save and calls into geometry/pose helpers — consistent with the actor render path.
+   Molang/pose variables a player-model render routine sets.
+3. On 26.52 the diagnostic is referenced by functions that are **not** `LivePlayerRenderer`
+   vtable slots, so the string scan declines there and the configured index is used; a build
+   whose index is also wrong fails closed (the executable-address guard refuses the hook).
 
 ### Why the entry is safe to detour without knowing its ABI
 
