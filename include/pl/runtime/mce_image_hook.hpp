@@ -212,6 +212,41 @@ void DestroyImage(void *image) noexcept;
 bool IsImagePathVerified();
 
 // ---------------------------------------------------------------------------------------------
+// Base-skin capture (the local player's real Minecraft skin)
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * @brief Copies out the most recently captured base-skin texture, if one is held.
+ *
+ * The engine's image loader is handed the source bytes of every image it builds, and the player's
+ * base skin is one of them. When the loader detour sees a payload whose dimensions and byte length
+ * match a base-skin atlas, it copies it into a bounded single-slot buffer here. The launcher reads
+ * it back to render the player's real skin in the preview and the radial hub.
+ *
+ * This is **content capture, not attribution**: the loader seam carries no player or texture id, so
+ * the held texture is the most recent base-skin-shaped upload, not a proven "this is the local
+ * player's skin". The launcher is told so (`SkinCapture::contentOnly`) and labels it accordingly.
+ *
+ * @param out       receives the RGBA bytes (top-left origin) when a capture is held
+ * @param maxBytes  capacity of @p out
+ * @param width     receives the pixel width
+ * @param height    receives the pixel height
+ * @param format    receives the loader format the bytes arrived as
+ * @param stampMs   receives the monotonic capture time (0 when none)
+ * @param outSize   receives the payload byte length
+ * @return true when a capture was copied; false when none is held or the buffer is too small
+ */
+bool CopyCapturedSkin(std::uint8_t *out, std::size_t maxBytes, std::uint32_t *width,
+                      std::uint32_t *height, std::uint32_t *format, std::int64_t *stampMs,
+                      std::size_t *outSize);
+
+/** Discards the held skin capture (session teardown). */
+void ClearCapturedSkin();
+
+/** True while a skin capture is held. */
+bool HasCapturedSkin();
+
+// ---------------------------------------------------------------------------------------------
 // The mce::Image pipeline hook
 // ---------------------------------------------------------------------------------------------
 

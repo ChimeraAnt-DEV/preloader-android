@@ -1,6 +1,7 @@
 #include <jni.h>
 
 #include <cstdint>
+#include <cstring>
 #include <vector>
 
 #include "pl/cosmetics/NativeCosmeticRenderer.hpp"
@@ -361,6 +362,58 @@ Java_org_chimeramc_client_preloader_PreloaderInput_nativeSetCosmeticDebugCube(JN
 JNIEXPORT jboolean JNICALL
 Java_org_chimeramc_client_preloader_PreloaderInput_nativeIsDebugCubeEnabled(JNIEnv *, jclass) {
   return pl::cosmetics::IsDebugCubeEnabled() ? JNI_TRUE : JNI_FALSE;
+}
+
+// Returns the captured base-skin texture as {rgba bytes, width, height, format} in one byte[]:
+// a 16-byte little-endian header (width, height, format, stampMs) followed by the payload. Null
+// when no base-skin-shaped upload has been seen. The launcher decodes it (PNG or raw RGBA) and
+// renders it as the player's skin.
+JNIEXPORT jbyteArray JNICALL
+Java_org_chimeramc_client_preloader_PreloaderInput_nativeReadCapturedSkin(JNIEnv *env, jclass) {
+  // One locked pass: the copy returns the payload size, so no separate (racy) size query is needed
+  // and the read allocates exactly the payload.
+  constexpr std::size_t kMaxPayload = 512U * 512U * 4U;
+  std::vector<std::uint8_t> buffer(kMaxPayload, 0);
+  std::uint32_t width = 0;
+  std::uint32_t height = 0;
+  std::uint32_t format = 0;
+  std::int64_t stampMs = 0;
+  std::size_t payloadSize = 0;
+  if (!pl::runtime::CopyCapturedSkin(buffer.data(), buffer.size(), &width, &height, &format,
+                                     &stampMs, &payloadSize)
+      || payloadSize == 0 || payloadSize > kMaxPayload) {
+    return nullptr;
+  }
+
+  constexpr std::size_t kHeader = 16;
+  std::vector<std::uint8_t> out(kHeader + payloadSize, 0);
+  auto put32 = [&out](std::size_t offset, std::uint32_t value) {
+    out[offset] = static_cast<std::uint8_t>(value & 0xFF);
+    out[offset + 1] = static_cast<std::uint8_t>((value >> 8) & 0xFF);
+    out[offset + 2] = static_cast<std::uint8_t>((value >> 16) & 0xFF);
+    out[offset + 3] = static_cast<std::uint8_t>((value >> 24) & 0xFF);
+  };
+  put32(0, width);
+  put32(4, height);
+  put32(8, format);
+  put32(12, static_cast<std::uint32_t>(stampMs & 0xFFFFFFFFu));
+  std::memcpy(out.data() + kHeader, buffer.data(), payloadSize);
+
+  jbyteArray result = env->NewByteArray(static_cast<jsize>(out.size()));
+  if (result == nullptr) return nullptr;
+  env->SetByteArrayRegion(result, 0, static_cast<jsize>(out.size()),
+                          reinterpret_cast<const jbyte *>(out.data()));
+  return result;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_org_chimeramc_client_preloader_PreloaderInput_nativeHasCapturedSkin(JNIEnv *, jclass) {
+  return pl::runtime::HasCapturedSkin() ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT void JNICALL
+Java_org_chimeramc_client_preloader_PreloaderInput_nativeClearCapturedSkin(JNIEnv *, jclass) {
+  pl::runtime::ClearCapturedSkin();
 }
 
 } // extern "C"
