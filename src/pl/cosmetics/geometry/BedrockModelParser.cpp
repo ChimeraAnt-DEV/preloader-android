@@ -152,6 +152,12 @@ Bone parseBone(const json &object) {
   if (readVec(object, "rotation", 3, rotation)) {
     bone.rotation = toVec3(rotation);
     bone.hasRotation = true;
+  } else if (readVec(object, "bind_pose_rotation", 3, rotation)) {
+    // Bedrock's default pose is `bind_pose_rotation`; a bone that only states that (no `rotation`)
+    // was previously left unrotated, so the cape chain's 180-degree facing was lost and the cape
+    // faced into the player. Fall back to it when `rotation` is absent.
+    bone.rotation = toVec3(rotation);
+    bone.hasRotation = true;
   }
   if (object.contains("cubes") && object.at("cubes").is_array()) {
     for (const json &cubeJson : object.at("cubes")) {
@@ -354,6 +360,18 @@ std::vector<Mesh> GeometryMeshBuilder::build(const BedrockGeometry &geometry) {
   if (geometry.models.empty()) return meshes;
   const GeometryModel &model = geometry.models.front();
 
+  // The shader samples with `texture2D(uTexture, vUv)`, which takes normalised 0..1 coordinates,
+  // while a Bedrock `.geo.json` states UVs in atlas *pixels*. Emitting the pixel values unchanged
+  // meant every sample was taken from the top-left texel — the in-game cape/hat/pet came out a flat
+  // smear of one texel. Normalise here, where the model's atlas dimensions are known, so the whole
+  // native path is in texture space and the shader stays a plain sampler.
+  const float texW = model.description.textureWidth > 0
+      ? static_cast<float>(model.description.textureWidth) : 64.0F;
+  const float texH = model.description.textureHeight > 0
+      ? static_cast<float>(model.description.textureHeight) : 64.0F;
+  const float invTexW = 1.0F / texW;
+  const float invTexH = 1.0F / texH;
+
   std::vector<const Bone *> byName;
   std::vector<std::string> names;
   byName.reserve(model.bones.size());
@@ -423,12 +441,16 @@ std::vector<Mesh> GeometryMeshBuilder::build(const BedrockGeometry &geometry) {
         const auto base = static_cast<std::uint32_t>(mesh.vertices.size());
         const int *indices = kFaceCorners[faceIndex];
         // Grid order [TL, TR, BL, BR] so the texture top maps to the model's +y edge on every face.
-        const Vec2f uvs[4] = {Vec2f{u0, v0}, Vec2f{u1, v0}, Vec2f{u0, v1}, Vec2f{u1, v1}};
+        // Normalised to 0..1 against the atlas (see the invTexW/invTexH comment above).
+        const Vec2f uvs[4] = {Vec2f{u0 * invTexW, v0 * invTexH},
+                              Vec2f{u1 * invTexW, v0 * invTexH},
+                              Vec2f{u0 * invTexW, v1 * invTexH},
+                              Vec2f{u1 * invTexW, v1 * invTexH}};
         for (int i = 0; i < 4; ++i) {
           const UvRect raw = cube.perFace.faces[faceIndex];
           Vec2f uv = uvs[i];
-          if (cube.perFace.present && raw.w < 0.0F) uv.x = u0 + u1 - uv.x;
-          if (cube.perFace.present && raw.h < 0.0F) uv.y = v0 + v1 - uv.y;
+          if (cube.perFace.present && raw.w < 0.0F) uv.x = (u0 + u1) * invTexW - uv.x;
+          if (cube.perFace.present && raw.h < 0.0F) uv.y = (v0 + v1) * invTexH - uv.y;
           mesh.vertices.push_back(Vertex{corner[indices[i]], shadedNormal, uv});
         }
         mesh.indices.push_back(base + 0);

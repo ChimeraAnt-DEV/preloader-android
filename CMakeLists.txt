@@ -32,6 +32,7 @@ set(PRELOADER_SOURCES
         src/pl/cosmetics/NativeCosmeticData.cpp
         src/pl/cosmetics/NativeCosmeticContext.cpp
         src/pl/cosmetics/NativeCosmeticRenderer.cpp
+        src/pl/cosmetics/CosmeticParticles.cpp
         src/pl/cosmetics/NativeRenderHook.cpp
         src/pl/cosmetics/animation/AnimationSolver.cpp
         src/pl/cosmetics/animation/AnimationJni.cpp

@@ -117,7 +117,7 @@ void DrawCosmeticsCallback() {
   // is equipped this frame.
   g_callbackLive.store(true, std::memory_order_relaxed);
   const pl::runtime::CosmeticFrameHeader cosmetic = pl::runtime::ReadCosmeticFrameHeader();
-  if (!cosmetic.valid || (cosmetic.flags & 0x7u) == 0) return;
+  if (!cosmetic.valid || (cosmetic.flags & 0xFu) == 0) return;
   g_cosmeticFrameTick.fetch_add(1, std::memory_order_relaxed);
 
   // Lock-free snapshot of the double-buffered frame, with the published version. The callback is

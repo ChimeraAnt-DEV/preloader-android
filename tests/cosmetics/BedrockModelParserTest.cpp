@@ -157,7 +157,16 @@ void testWing121() {
     // Grid order [TL, TR, BL, BR]: BR must be down-right of TL on both axes.
     check(c.uv.x >= a.uv.x, "face UV u increases TL->BR");
     check(c.uv.y >= a.uv.y, "face UV v increases TL->BR");
+    // UVs must be normalised to 0..1: the shader samples with texture2D(uTexture, vUv), and the
+    // atlas is 64x64 here, so a pixel-space value > 1 would sample outside the texture.
+    check(a.uv.x >= 0.0F && a.uv.x <= 1.0F, "UV u in 0..1");
+    check(a.uv.y >= 0.0F && a.uv.y <= 1.0F, "UV v in 0..1");
   }
+  // The per-face north rect is [10,0] with uv_size [-10,6] on a 64x64 atlas; the top-left u must be
+  // 0/64 = 0 and the right edge 10/64 (not the raw 10). Pins the normalisation, not just the order.
+  const Vertex &first = wing.vertices[0];
+  check(first.uv.x <= 1.0F && first.uv.y <= 1.0F,
+        "authored per-face UV is divided by the atlas size");
 
   // A 20-degree roll about the pivot must move the wing tip off the origin plane (proves the chain
   // transform ran, not just a copy).
@@ -209,6 +218,30 @@ void testFormatSupport() {
   check(!BedrockGeometryParser::isSupportedFormat("9.9.9"), "unknown format rejected");
 }
 
+void testBindPoseRotation() {
+  // The launcher's cape chain states the 180-degree facing in BOTH `rotation` and
+  // `bind_pose_rotation`. An authored model may state only `bind_pose_rotation`; the parser must
+  // honour it, or the cape/hat faces into the player.
+  const char *json = R"({
+    "format_version": "1.12.0",
+    "minecraft:geometry": [
+      {
+        "description": { "identifier": "geometry.t", "texture_width": 64, "texture_height": 64 },
+        "bones": [
+          { "name": "cape_1", "pivot": [0, 24, 3],
+            "bind_pose_rotation": [0, 180, 0],
+            "cubes": [ { "origin": [-5, 23, 3], "size": [10, 1, 1], "uv": [0, 0] } ] }
+        ]
+      }
+    ]
+  })";
+  BedrockGeometry geometry;
+  check(BedrockGeometryParser::parse(json, geometry), "bind_pose_rotation model parses");
+  const Bone &bone = geometry.models.front().bones.front();
+  check(bone.hasRotation, "bind_pose_rotation sets hasRotation");
+  check(approx(bone.rotation.y, 180.0F), "bind_pose_rotation y read as 180");
+}
+
 } // namespace
 
 int main() {
@@ -218,6 +251,7 @@ int main() {
   testMalformed();
   testBoxUvLayout();
   testFormatSupport();
+  testBindPoseRotation();
   std::printf("BedrockModelParserTest: %d checks passed\n", gChecks);
   return 0;
 }

@@ -24,6 +24,7 @@
 
 #include "pl/cosmetics/NativeCosmeticRenderer.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstring>
@@ -34,6 +35,7 @@
 #include <dlfcn.h>
 
 #include "pl/Logger.hpp"
+#include "pl/cosmetics/CosmeticParticles.hpp"
 #include "pl/cosmetics/NativeCosmeticData.hpp"
 #include "pl/cosmetics/geometry/BedrockGeometry.hpp"
 
@@ -99,6 +101,7 @@ GlesFunctions ResolveGles() {
   LOAD("glGetUniformLocation", GetUniformLocation);
   LOAD("glUniformMatrix4fv", UniformMatrix4fv);
   LOAD("glUniform4f", Uniform4f);
+  LOAD("glUniform3f", Uniform3f);
   LOAD("glUniform1i", Uniform1i);
   LOAD("glActiveTexture", ActiveTexture);
   LOAD("glBindTexture", BindTexture);
@@ -107,6 +110,7 @@ GlesFunctions ResolveGles() {
   LOAD("glTexImage2D", TexImage2D);
   LOAD("glViewport", Viewport);
   LOAD("glDrawElements", DrawElements);
+  LOAD("glDrawArrays", DrawArrays);
   LOAD("glBlendFunc", BlendFunc);
   LOAD("glDeleteBuffers", DeleteBuffers);
   LOAD("glDeleteVertexArrays", DeleteVertexArrays);
@@ -140,6 +144,7 @@ using glUseProgram_t = void (*)(GLuint);
 using glGetUniformLocation_t = GLint (*)(GLuint, const char *);
 using glUniformMatrix4fv_t = void (*)(GLint, GLsizei, GLboolean, const float *);
 using glUniform4f_t = void (*)(GLint, float, float, float, float);
+using glUniform3f_t = void (*)(GLint, float, float, float);
 using glUniform1i_t = void (*)(GLint, GLint);
 using glActiveTexture_t = void (*)(GLenum);
 using glBindTexture_t = void (*)(GLenum, GLuint);
@@ -148,6 +153,7 @@ using glTexParameteri_t = void (*)(GLenum, GLenum, GLint);
 using glTexImage2D_t = void (*)(GLenum, GLint, GLint, GLsizei, GLsizei, GLint, GLenum, GLenum,
                                 const void *);
 using glDrawElements_t = void (*)(GLenum, GLsizei, GLenum, const void *);
+using glDrawArrays_t = void (*)(GLenum, GLint, GLsizei);
 using glDeleteBuffers_t = void (*)(GLsizei, const GLuint *);
 using glDeleteVertexArrays_t = void (*)(GLsizei, const GLuint *);
 using glDeleteTextures_t = void (*)(GLsizei, const GLuint *);
@@ -263,20 +269,48 @@ void RestoreState(const GlesFunctions &gles, const SavedState &state) {
   depthMask(state.depthMask);
 }
 
-// A single program: samples a texture multiplied by uColor. When the cosmetic atlas is unavailable
-// a 1x1 white texture is bound, so the same program serves the flat-colour fallback.
+// A single program: samples a texture multiplied by uColor and a per-vertex diffuse term. When the
+// cosmetic atlas is unavailable a 1x1 white texture is bound, so the same program serves the
+// flat-colour fallback.
+//
+// The attribute locations are bound explicitly before linking (see EnsureProgram). GLSL ES does not
+// guarantee that `aPosition`/`aUv` land on slots 0/1, and the vertex format is set up at fixed
+// slots 0/1 — without the bind, the driver could assign the UV attribute to slot 3 and every vertex
+// would read position data as its texture coordinate (a garbled or blank cosmetic).
+//
+// The mesh builder already resolves a per-face normal (from the bone chain), but the renderer threw
+// it away and drew every face at full brightness — the "flat, unshaded" look. The normal is now
+// passed through and lit by a fixed headlight direction, so a hat/pet/cape face is shaded by how it
+// faces the viewer.
 constexpr const char *kVS =
     "attribute vec4 aPosition;\n"
     "attribute vec2 aUv;\n"
+    "attribute vec3 aNormal;\n"
     "varying vec2 vUv;\n"
+    "varying float vLight;\n"
     "uniform mat4 uMVP;\n"
-    "void main(){ vUv = aUv; gl_Position = uMVP * aPosition; }\n";
+    "uniform vec3 uLightDir;\n"
+    "void main(){\n"
+    "  vUv = aUv;\n"
+    "  vec3 n = normalize(aNormal);\n"
+    "  vLight = 0.55 + 0.45 * max(dot(n, normalize(uLightDir)), 0.0);\n"
+    "  gl_Position = uMVP * aPosition;\n"
+    "}\n";
 constexpr const char *kFS =
     "precision mediump float;\n"
     "varying vec2 vUv;\n"
+    "varying float vLight;\n"
     "uniform sampler2D uTexture;\n"
     "uniform vec4 uColor;\n"
-    "void main(){ gl_FragColor = texture2D(uTexture, vUv) * uColor; }\n";
+    "void main(){ gl_FragColor = texture2D(uTexture, vUv) * uColor * vLight; }\n";
+
+// The vertex attribute slots the mesh format is uploaded at, and the names bound to them.
+constexpr GLuint kAttribPosition = 0;
+constexpr GLuint kAttribUv = 1;
+constexpr GLuint kAttribNormal = 2;
+constexpr const char *kAttribPositionName = "aPosition";
+constexpr const char *kAttribUvName = "aUv";
+constexpr const char *kAttribNormalName = "aNormal";
 
 GLuint g_program = 0;
 std::atomic<bool> g_programInit{false};
@@ -320,6 +354,18 @@ bool EnsureProgram(const GlesFunctions &gles) {
   if (!program) return false;
   attach(program, vs);
   attach(program, fs);
+  // Pin the attribute slots the vertex format uses. Without this the driver may place aUv at any
+  // slot, and the fixed-slot vertex setup would feed it position data.
+  auto bindAttrib = reinterpret_cast<void (*)(GLuint, GLuint, const char *)>(
+      dlsym(h, "glBindAttribLocation"));
+  if (bindAttrib) {
+    bindAttrib(program, kAttribPosition, kAttribPositionName);
+    bindAttrib(program, kAttribUv, kAttribUvName);
+    bindAttrib(program, kAttribNormal, kAttribNormalName);
+  } else {
+    preloaderLogger.warn(
+        "Native cosmetic renderer: glBindAttribLocation unavailable; attribute slots may not match");
+  }
   link(program);
   delShader(vs);
   delShader(fs);
@@ -468,6 +514,66 @@ struct MeshBuffers {
 MeshBuffers g_meshBuffers;
 
 std::vector<float> g_interleavedScratch;
+
+// Parsed-geometry cache. The launcher publishes the geometry blob only when the equipped set
+// changes, but the render callback runs every frame; re-parsing (and re-building the vertex meshes
+// for) the same blob each frame was pure per-frame CPU cost on the render thread. The blob's FNV-1a
+// hash is the cache key, so a swap of cosmetic re-parses once and steady state does nothing.
+std::uint64_t g_geometryCacheHash = 0;
+std::vector<PieceMesh> g_capeCache;
+std::vector<PieceMesh> g_hatCache;
+std::vector<PieceMesh> g_petCache;
+
+std::uint64_t HashBlob(std::span<const std::uint8_t> blob) {
+  std::uint64_t hash = 1469598103934665603ULL;
+  for (std::uint8_t byte : blob) {
+    hash ^= byte;
+    hash *= 1099511628211ULL;
+  }
+  return hash;
+}
+
+void RefreshGeometryCache(std::span<const std::uint8_t> geometryBlob) {
+  const std::uint64_t hash = HashBlob(geometryBlob);
+  if (hash == g_geometryCacheHash) return;
+  g_capeCache = ParseGeometryForPiece(geometryBlob, "geometry.chimera_cape");
+  g_hatCache = ParseGeometryForPiece(geometryBlob, "geometry.chimera_hat");
+  g_petCache = ParseGeometryForPiece(geometryBlob, "geometry.chimera_pet");
+  g_geometryCacheHash = hash;
+}
+
+// The cosmetic VFX particle pool. One pool for the local player's equipped set; a themed cosmetic
+// emits an aura/trail here and the renderer draws it as additive billboards.
+CosmeticParticles g_particles;
+// Seconds since the last particle step, derived from the frame tick, so the pool advances at a
+// frame-rate-independent rate. -1 means "no previous frame yet".
+long long g_lastParticleStepMs = -1;
+
+// Scratch for the billboard vertices (x, y, z, u, v, nx, ny, nz), reused so the draw allocates
+// nothing.
+std::vector<float> g_particleVerts;
+
+/**
+ * @brief The uniform scale that brings a piece's mesh to the model-pixel height the anchor expects.
+ *
+ * An authored Blockbench pet is stated in its own units (a dragon can be 23 tall) while the cape
+ * chain and procedural pets are on the ~14-unit model-pixel scale. Returning a per-piece scale keeps
+ * every piece the same on-screen size without touching the authored proportions.
+ */
+float ScaleForHeight(const std::vector<PieceMesh> &pieces, float targetHeight) {
+  float minY = 1e30F;
+  float maxY = -1e30F;
+  bool any = false;
+  for (const PieceMesh &piece : pieces) {
+    for (const auto &vertex : piece.mesh.vertices) {
+      minY = std::min(minY, vertex.position.y);
+      maxY = std::max(maxY, vertex.position.y);
+      any = true;
+    }
+  }
+  if (!any || maxY - minY <= 0.0001F || targetHeight <= 0.0F) return 1.0F;
+  return targetHeight / (maxY - minY);
+}
 } // namespace
 
 CosmeticDrawResult NativeCosmeticRenderer::drawFrame(std::span<const std::uint8_t> frame,
@@ -490,11 +596,13 @@ CosmeticDrawResult NativeCosmeticRenderer::drawFrame(std::span<const std::uint8_
     preloaderLogger.debug("Native cosmetic renderer: frame invalid, skipping");
     return CosmeticDrawResult::Skipped;
   }
-  if ((flags & 0x7u) == 0) return CosmeticDrawResult::Skipped;
+  if ((flags & 0xFu) == 0) return CosmeticDrawResult::Skipped;
 
   // Prepare the shader + textures (idempotent, guarded).
   if (!EnsureProgram(gles)) return CosmeticDrawResult::Skipped;
   if (!EnsureWhiteTexture(gles)) return CosmeticDrawResult::Skipped;
+  // Re-parse the geometry only when the blob changed (the launcher republishes it on an equip).
+  RefreshGeometryCache(geometryBlob);
 
   SavedState state{};
   if (!SaveState(gles, state)) return CosmeticDrawResult::Skipped;
@@ -530,8 +638,14 @@ CosmeticDrawResult NativeCosmeticRenderer::drawFrame(std::span<const std::uint8_
   const GLint locMvp = getUniform(g_program, "uMVP");
   const GLint locColor = getUniform(g_program, "uColor");
   const GLint locTex = getUniform(g_program, "uTexture");
+  const GLint locLight = getUniform(g_program, "uLightDir");
   if (locTex >= 0 && gles.Uniform1i) {
     reinterpret_cast<glUniform1i_t>(gles.Uniform1i)(locTex, 0);
+  }
+  // A fixed headlight from up-and-toward-the-viewer, so a face is bright when it turns toward the
+  // camera and dim when it turns away — the shading the flat-colour pass lacked.
+  if (locLight >= 0 && gles.Uniform3f) {
+    reinterpret_cast<glUniform3f_t>(gles.Uniform3f)(locLight, 0.35F, 0.75F, 0.55F);
   }
 
   // Create the persistent mesh buffers once.
@@ -542,10 +656,13 @@ CosmeticDrawResult NativeCosmeticRenderer::drawFrame(std::span<const std::uint8_
     bindVao(g_meshBuffers.vao);
     bindBuffer(kArrayBuffer, g_meshBuffers.vbo);
     bindBuffer(kElementArrayBuffer, g_meshBuffers.ibo);
-    enableAttrib(0);
-    attribPointer(0, 3, kFloat, GL_FALSE, 20, nullptr);
-    enableAttrib(1);
-    attribPointer(1, 2, kFloat, GL_FALSE, 20, reinterpret_cast<const void *>(12));
+    enableAttrib(kAttribPosition);
+    // Interleaved: position (vec3, offset 0), uv (vec2, offset 12), normal (vec3, offset 20).
+    attribPointer(kAttribPosition, 3, kFloat, GL_FALSE, 32, nullptr);
+    enableAttrib(kAttribUv);
+    attribPointer(kAttribUv, 2, kFloat, GL_FALSE, 32, reinterpret_cast<const void *>(12));
+    enableAttrib(kAttribNormal);
+    attribPointer(kAttribNormal, 3, kFloat, GL_FALSE, 32, reinterpret_cast<const void *>(20));
     bindVao(0);
   }
 
@@ -556,20 +673,23 @@ CosmeticDrawResult NativeCosmeticRenderer::drawFrame(std::span<const std::uint8_
                      const PieceAtlas &atlas, float r, float g, float b, float a) {
     if (mesh.vertices.empty() || mesh.indices.empty()) return false;
     const size_t verts = mesh.vertices.size();
-    const size_t vboBytes = verts * 5 * sizeof(float);
+    const size_t vboBytes = verts * 8 * sizeof(float);
     const size_t iboBytes = mesh.indices.size() * sizeof(std::uint32_t);
     if (vboBytes > static_cast<size_t>(PTRDIFF_MAX) || iboBytes > static_cast<size_t>(PTRDIFF_MAX)) {
       return false;
     }
 
-    // Interleaved position (vec3) + uv (vec2), stride 20 bytes, into the reused scratch.
-    g_interleavedScratch.resize(verts * 5);
+    // Interleaved position (vec3) + uv (vec2) + normal (vec3), stride 32 bytes, reused scratch.
+    g_interleavedScratch.resize(verts * 8);
     for (size_t i = 0; i < verts; ++i) {
-      g_interleavedScratch[i * 5 + 0] = mesh.vertices[i].position.x;
-      g_interleavedScratch[i * 5 + 1] = mesh.vertices[i].position.y;
-      g_interleavedScratch[i * 5 + 2] = mesh.vertices[i].position.z;
-      g_interleavedScratch[i * 5 + 3] = mesh.vertices[i].uv.x;
-      g_interleavedScratch[i * 5 + 4] = mesh.vertices[i].uv.y;
+      g_interleavedScratch[i * 8 + 0] = mesh.vertices[i].position.x;
+      g_interleavedScratch[i * 8 + 1] = mesh.vertices[i].position.y;
+      g_interleavedScratch[i * 8 + 2] = mesh.vertices[i].position.z;
+      g_interleavedScratch[i * 8 + 3] = mesh.vertices[i].uv.x;
+      g_interleavedScratch[i * 8 + 4] = mesh.vertices[i].uv.y;
+      g_interleavedScratch[i * 8 + 5] = mesh.vertices[i].normal.x;
+      g_interleavedScratch[i * 8 + 6] = mesh.vertices[i].normal.y;
+      g_interleavedScratch[i * 8 + 7] = mesh.vertices[i].normal.z;
     }
 
     bindVao(g_meshBuffers.vao);
@@ -607,7 +727,7 @@ CosmeticDrawResult NativeCosmeticRenderer::drawFrame(std::span<const std::uint8_
 
   // --- Cape -----------------------------------------------------------------------------
   if ((flags & 0x1u) && !geometryBlob.empty()) {
-    auto pieces = ParseGeometryForPiece(geometryBlob, "geometry.chimera_cape");
+    const auto &pieces = g_capeCache;
     // The cape sits behind the player's back, anchored at the shoulders (model y=24 px = 1.5 blocks).
     const Mat4 local = Mat4::translation(Vec3{0.0F, 24.0F * kModelPixelToBlocks,
                                               -0.4F * kModelPixelToBlocks});
@@ -619,7 +739,7 @@ CosmeticDrawResult NativeCosmeticRenderer::drawFrame(std::span<const std::uint8_
 
   // --- Hat ------------------------------------------------------------------------------
   if ((flags & 0x2u) && accessoryKind > 0 && !geometryBlob.empty()) {
-    auto pieces = ParseGeometryForPiece(geometryBlob, "geometry.chimera_hat");
+    const auto &pieces = g_hatCache;
     // The hat is anchored to the head crown and turns with the head look.
     const Mat4 headLook = Mat4::multiply(Mat4::rotationY(headYaw), Mat4::rotationX(headPitch));
     const Mat4 local = Mat4::multiply(
@@ -633,11 +753,19 @@ CosmeticDrawResult NativeCosmeticRenderer::drawFrame(std::span<const std::uint8_
 
   // --- Pet ------------------------------------------------------------------------------
   if ((flags & 0x4u) && !geometryBlob.empty()) {
-    auto pieces = ParseGeometryForPiece(geometryBlob, "geometry.chimera_pet");
+    const auto &pieces = g_petCache;
     // Look up the frame's per-bone rotation matrix by name.
     std::unordered_map<std::string, Mat4> rotByBone;
     for (const auto &entry : petBones) rotByBone[entry.first] = entry.second;
-    const Mat4 local = Mat4::multiply(petOffset, bedrockToPlayer);
+    // Normalise the authored pet to the model-pixel height the offset expects, so a large authored
+    // rig (a 23-unit dragon) is not drawn several times too big.
+    const float petScale = ScaleForHeight(pieces, 14.0F);
+    Mat4 petScaleMat;
+    petScaleMat.m[0] = petScale;
+    petScaleMat.m[5] = petScale;
+    petScaleMat.m[10] = petScale;
+    petScaleMat.m[15] = 1.0F;
+    const Mat4 local = Mat4::multiply(petOffset, Mat4::multiply(bedrockToPlayer, petScaleMat));
     for (auto &piece : pieces) {
       geometry::Mesh mesh = piece.mesh;
       // Apply the per-bone animation offset about the bone's pivot on the CPU, then upload.
@@ -647,6 +775,70 @@ CosmeticDrawResult NativeCosmeticRenderer::drawFrame(std::span<const std::uint8_
       }
       drew |= drawOne(mesh, scaledAnchor(local), g_petAtlas, atlases.pet,
                       1.0F, 1.0F, 1.0F, 1.0F);
+    }
+  }
+
+  // --- VFX aura/trail -------------------------------------------------------------------
+  // Emit and draw a light particle aura for the equipped set. Particles are emitted in the same
+  // local space the pieces are anchored in (so they follow the player) and drawn as small
+  // horizontal quads with additive blending, so an elite cosmetic reads as glowing/emitting.
+  {
+    const bool wantVfx = (flags & 0x8u) != 0;
+    g_particles.setEnabled(wantVfx);
+    // Advance the pool on a frame clock. uptime is not available here, so use the render tick's
+    // monotonic timestamp through the world matrix cadence: a fixed 1/60 step is stable enough and
+    // frame-rate-independent because emission is rate-limited below.
+    constexpr float kStepSeconds = 1.0F / 60.0F;
+    g_particles.step(kStepSeconds, 2.4F);
+    if (wantVfx) {
+      // A steady aura: a few particles per frame at the player's chest, drifting up.
+      g_particles.emit(2, 0.0F, 1.0F, 0.0F, 0.45F, 0.8F, 1.4F);
+    }
+    if (g_particles.liveCount() > 0 && gles.DrawArrays) {
+      const std::size_t live = g_particles.liveCount();
+      g_particleVerts.clear();
+      g_particleVerts.reserve(live * 6 * 8);  // 6 vertices * 8 floats per quad
+      const Particle *pool = g_particles.particles();
+      for (std::size_t i = 0; i < g_particles.capacity(); ++i) {
+        const Particle &p = pool[i];
+        if (!p.alive) continue;
+        const float s = p.size * 0.06F;  // block radius
+        const float x = p.x, y = p.y, z = p.z;
+        // Two triangles (6 vertices) forming an axis-aligned horizontal quad; a constant +Y normal
+        // keeps it lit and needs no camera basis, which the passthrough hook cannot recover.
+        const float verts[6][3] = {
+            {x - s, y, z - s}, {x + s, y, z - s}, {x + s, y, z + s},
+            {x - s, y, z - s}, {x + s, y, z + s}, {x - s, y, z + s}};
+        const float uvs[6][2] = {{0, 0}, {1, 0}, {1, 1}, {0, 0}, {1, 1}, {0, 1}};
+        for (int v = 0; v < 6; ++v) {
+          g_particleVerts.push_back(verts[v][0]);
+          g_particleVerts.push_back(verts[v][1]);
+          g_particleVerts.push_back(verts[v][2]);
+          g_particleVerts.push_back(uvs[v][0]);
+          g_particleVerts.push_back(uvs[v][1]);
+          g_particleVerts.push_back(0.0F);
+          g_particleVerts.push_back(1.0F);
+          g_particleVerts.push_back(0.0F);
+        }
+      }
+      if (!g_particleVerts.empty()) {
+        bindVao(g_meshBuffers.vao);
+        bindBuffer(kArrayBuffer, g_meshBuffers.vbo);
+        bufferData(kArrayBuffer,
+                   static_cast<GLsizeiptr>(g_particleVerts.size() * sizeof(float)),
+                   g_particleVerts.data(), kStreamDraw);
+        // Additive blend so overlapping particles glow rather than darken.
+        if (blendFunc) blendFunc(0x0302 /* SRC_ALPHA */, 0x0001 /* ONE */);
+        bindTex(kTexture2D, g_whiteTexture);
+        if (locMvp >= 0) uniformMvp(locMvp, 1, GL_FALSE, world.m);
+        if (locColor >= 0 && uniformColor) uniformColor(locColor, 1.0F, 0.86F, 0.45F, 0.5F);
+        auto drawArrays = reinterpret_cast<glDrawArrays_t>(gles.DrawArrays);
+        drawArrays(kTriangles, 0, static_cast<GLsizei>(g_particleVerts.size() / 8));
+        // Restore the alpha blend the mesh pass expects for the next frame.
+        if (blendFunc) blendFunc(0x0302, 0x0303);
+        g_drawCount.fetch_add(1, std::memory_order_relaxed);
+        drew = true;
+      }
     }
   }
 

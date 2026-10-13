@@ -109,6 +109,7 @@ struct GlesFunctions {
   void *GetUniformLocation = nullptr;
   void *UniformMatrix4fv = nullptr;
   void *Uniform4f = nullptr;
+  void *Uniform3f = nullptr;
   void *Uniform1i = nullptr;
   void *ActiveTexture = nullptr;
   void *BindTexture = nullptr;
@@ -117,6 +118,7 @@ struct GlesFunctions {
   void *TexImage2D = nullptr;
   void *Viewport = nullptr;
   void *DrawElements = nullptr;
+  void *DrawArrays = nullptr;
   void *BlendFunc = nullptr;
   void *DeleteBuffers = nullptr;
   void *DeleteVertexArrays = nullptr;

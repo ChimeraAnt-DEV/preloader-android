@@ -63,12 +63,21 @@ long long MonotonicMs() {
 
 // The detour. It runs on the render thread, once per rendered player model. It records the
 // tick and call counts, forwards every argument unchanged, then runs the registered post-render
-// callbacks once per frame (the first call of the frame).
+// callbacks.
+//
+// <b>The callbacks must run on every call, not only on a "new frame".</b> The renderer is invoked
+// once per rendered player model, so a frame boundary has to be inferred. The previous version
+// inferred it as a gap of more than one second, which is wrong: during play the renderer runs every
+// ~16 ms, so the "first call of the frame" test was true only for the very first frame after a
+// second-long stall — the cosmetics callback therefore ran once at startup and then never again, so
+// nothing appeared in game even though the preview worked. The cosmetic draw callback dedupes per
+// published frame version itself, so running it on every call draws exactly once per launcher tick.
 void HookRender(void *a, void *b, void *c, void *d, void *e, void *f, void *g, void *h) {
   const long long now = MonotonicMs();
   const long long last = g_lastRenderMs.load(std::memory_order_relaxed);
-  const bool firstOfFrame = last == 0 || now - last > 1000;
-  if (firstOfFrame) {
+  // A gap beyond a plausible frame (~1s) is treated as a new frame for the call *count* only; it
+  // does not gate the callbacks. The count is what proves the hook covers non-local players.
+  if (last == 0 || now - last > 1000) {
     g_frameCalls.store(1, std::memory_order_relaxed);
     g_renderTick.fetch_add(1, std::memory_order_relaxed);
   } else {
@@ -81,18 +90,16 @@ void HookRender(void *a, void *b, void *c, void *d, void *e, void *f, void *g, v
     g_origRender(a, b, c, d, e, f, g, h);
   }
 
-  // Run the post-render seam only on the first call of a frame, so a consumer draws once per
-  // frame rather than once per rendered player model.
-  if (firstOfFrame) {
-    const std::size_t count = g_postRenderCount.load(std::memory_order_acquire);
-    for (std::size_t i = 0; i < count && i < kMaxPostRenderCallbacks; ++i) {
-      PostRenderCallback callback = g_postRender[i].load(std::memory_order_acquire);
-      if (callback != nullptr) callback();
-    }
-    // Also dispatch the public mod render callbacks (pl/Render.hpp) from this same seam, so mods and
-    // the native cosmetics share one render-thread callback point.
-    ::pl::render::detail::DispatchRenderCallbacks();
+  // Run the post-render seam on every call. Consumers that draw once per frame dedupe internally
+  // (the cosmetics callback keys on the published frame version).
+  const std::size_t count = g_postRenderCount.load(std::memory_order_acquire);
+  for (std::size_t i = 0; i < count && i < kMaxPostRenderCallbacks; ++i) {
+    PostRenderCallback callback = g_postRender[i].load(std::memory_order_acquire);
+    if (callback != nullptr) callback();
   }
+  // Also dispatch the public mod render callbacks (pl/Render.hpp) from this same seam, so mods and
+  // the native cosmetics share one render-thread callback point.
+  ::pl::render::detail::DispatchRenderCallbacks();
 }
 
 } // namespace

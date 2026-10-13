@@ -57,4 +57,8 @@ compile_run NativeCosmeticDataTest \
 compile_run VersionCompareTest \
   "$here/VersionCompareTest.cpp"
 
+compile_run CosmeticParticlesTest \
+  "$root/src/pl/cosmetics/CosmeticParticles.cpp" \
+  "$here/CosmeticParticlesTest.cpp"
+
 echo "all cosmetics host tests passed"
