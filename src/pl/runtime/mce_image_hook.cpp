@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <cstring>
+#include <ctime>
 #include <mutex>
 #include <new>
 #include <unordered_map>
@@ -123,6 +124,90 @@ std::uint32_t g_nextHeight = 0;
 std::atomic<TextureFlushFn> g_flusher{nullptr};
 std::atomic<void *> g_flusherUser{nullptr};
 
+// ---------------------------------------------------------------------------------------------
+// Base-skin capture
+// ---------------------------------------------------------------------------------------------
+//
+// The loader is handed the source bytes of every image the engine builds, and the player's base
+// skin is one of them. There is no player/texture id at this seam, so a base-skin upload is
+// recognised by shape: a square PNG whose IHDR edge is a standard skin size (64/128/256), or a
+// square RGBA8 payload of one of those sizes. A matching payload is copied into a bounded
+// single-slot buffer, and the launcher reads it back to draw the player's real skin.
+//
+// It is content capture, not attribution: the held texture is the most recent base-skin-shaped
+// upload, not a proven "this is the local player's skin". The launcher labels it as such.
+constexpr std::size_t kSkinMaxBytes = 512U * 512U * 4U;  // 1 MiB: covers every shipped skin size
+
+std::mutex g_skinMutex;
+std::vector<std::uint8_t> g_skinBytes;
+std::uint32_t g_skinWidth = 0;
+std::uint32_t g_skinHeight = 0;
+std::uint32_t g_skinFormat = 0;
+std::atomic<std::int64_t> g_skinStampMs{0};
+
+long long MonotonicMs() {
+  timespec ts{};
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return static_cast<long long>(ts.tv_sec) * 1000LL + ts.tv_nsec / 1000000LL;
+}
+
+// A skin edge must be a power-of-two square of a standard skin size. Anything else is some other
+// square texture (a UI atlas, a particle sheet) and is ignored.
+bool IsSkinEdge(std::uint32_t edge) {
+  return edge == 64U || edge == 128U || edge == 256U || edge == 512U;
+}
+
+// Parses a PNG's IHDR edge, or 0 when the bytes are not a PNG or are malformed.
+std::uint32_t PngSquareEdge(const std::uint8_t *data, std::size_t size) {
+  if (data == nullptr || size < 24U) return 0;
+  static const std::uint8_t kPngMagic[8] = {0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a};
+  for (int i = 0; i < 8; ++i) {
+    if (data[i] != kPngMagic[i]) return 0;
+  }
+  // Bytes 12..15 are the IHDR type; 16..19 the width, 20..23 the height (big-endian).
+  const std::uint8_t *p = data + 16;
+  std::uint32_t width = (static_cast<std::uint32_t>(p[0]) << 24) |
+                        (static_cast<std::uint32_t>(p[1]) << 16) |
+                        (static_cast<std::uint32_t>(p[2]) << 8) |
+                        static_cast<std::uint32_t>(p[3]);
+  std::uint32_t height = (static_cast<std::uint32_t>(p[4]) << 24) |
+                         (static_cast<std::uint32_t>(p[5]) << 16) |
+                         (static_cast<std::uint32_t>(p[6]) << 8) |
+                         static_cast<std::uint32_t>(p[7]);
+  return width == height ? width : 0;
+}
+
+// Recognises a base-skin-shaped payload and reports its square edge (0 when not a skin).
+std::uint32_t BaseSkinEdge(std::uint32_t format, const std::uint8_t *data, std::size_t size) {
+  if (data == nullptr || size == 0 || size > kSkinMaxBytes) return 0;
+  if (format == kFormatAutoPng) {
+    std::uint32_t edge = PngSquareEdge(data, size);
+    return IsSkinEdge(edge) ? edge : 0;
+  }
+  if (format == kFormatRgba8) {
+    if (size % 4U != 0) return 0;
+    std::uint32_t pixels = static_cast<std::uint32_t>(size / 4U);
+    std::uint32_t edge = 1;
+    while (edge * edge < pixels && edge < 1024U) edge <<= 1;
+    if (edge * edge != pixels) return 0;
+    return IsSkinEdge(edge) ? edge : 0;
+  }
+  return 0;
+}
+
+// Copies a recognised base-skin payload into the single slot. Called from the loader detour, so it
+// stays bounded: one memcpy under a short mutex, no allocation beyond the buffer itself.
+void CaptureSkin(std::uint32_t format, const std::uint8_t *data, std::size_t size,
+                 std::uint32_t edge) {
+  if (data == nullptr || size == 0 || edge == 0) return;
+  std::lock_guard<std::mutex> lock(g_skinMutex);
+  g_skinBytes.assign(data, data + size);
+  g_skinWidth = edge;
+  g_skinHeight = edge;
+  g_skinFormat = format;
+  g_skinStampMs.store(MonotonicMs(), std::memory_order_relaxed);
+}
+
 // Tracked allocations, so a foreign or double free is refused instead of corrupting the heap. The
 // alignment is stored alongside the pointer because an aligned `operator delete` must be given the
 // same alignment the matching `operator new` was called with.
@@ -227,6 +312,15 @@ LoaderReturn HookLoader(void *out, std::uint32_t format, const std::uint8_t *dat
                         bool flag) {
   g_hookCalls.fetch_add(1, std::memory_order_relaxed);
   if (size != 0) g_bufferBytesSeen.fetch_add(size, std::memory_order_relaxed);
+
+  // Capture the base skin before any substitution: the player's own skin arrives here as a
+  // base-skin-shaped payload, and this is the only place the engine hands us its source bytes.
+  if (data != nullptr && size != 0) {
+    const std::uint32_t skinEdge = BaseSkinEdge(format, data, size);
+    if (skinEdge != 0) {
+      CaptureSkin(format, data, size, skinEdge);
+    }
+  }
 
   const std::uint8_t *useData = data;
   std::size_t useSize = size;
@@ -334,6 +428,35 @@ void DestroyImage(void *image) noexcept {
 }
 
 bool IsImagePathVerified() { return g_imagePathVerified.load(std::memory_order_relaxed); }
+
+bool CopyCapturedSkin(std::uint8_t *out, std::size_t maxBytes, std::uint32_t *width,
+                      std::uint32_t *height, std::uint32_t *format, std::int64_t *stampMs,
+                      std::size_t *outSize) {
+  std::lock_guard<std::mutex> lock(g_skinMutex);
+  if (g_skinBytes.empty() || g_skinWidth == 0 || g_skinHeight == 0) return false;
+  if (outSize != nullptr) *outSize = g_skinBytes.size();
+  if (out == nullptr || maxBytes < g_skinBytes.size()) return false;
+  std::memcpy(out, g_skinBytes.data(), g_skinBytes.size());
+  if (width != nullptr) *width = g_skinWidth;
+  if (height != nullptr) *height = g_skinHeight;
+  if (format != nullptr) *format = g_skinFormat;
+  if (stampMs != nullptr) *stampMs = g_skinStampMs.load(std::memory_order_relaxed);
+  return true;
+}
+
+void ClearCapturedSkin() {
+  std::lock_guard<std::mutex> lock(g_skinMutex);
+  g_skinBytes.clear();
+  g_skinWidth = 0;
+  g_skinHeight = 0;
+  g_skinFormat = 0;
+  g_skinStampMs.store(0, std::memory_order_relaxed);
+}
+
+bool HasCapturedSkin() {
+  std::lock_guard<std::mutex> lock(g_skinMutex);
+  return !g_skinBytes.empty() && g_skinWidth != 0;
+}
 
 // ---------------------------------------------------------------------------------------------
 // The pipeline hook
