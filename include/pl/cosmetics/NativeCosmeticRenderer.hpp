@@ -171,6 +171,40 @@ inline std::vector<PieceMesh> ParseGeometryForPiece(std::span<const std::uint8_t
  */
 PL_EXPORT GlesFunctions ResolveGles();
 
+/** @brief GL backend classification for the diagnostics report. */
+enum class GlBackend : int {
+  Unknown = 0,  ///< no GLES library resolved and no Vulkan library found
+  Gles = 1,     ///< the GLES function table resolved (an ES renderer)
+  Vulkan = 2,   ///< no GLES, but libvulkan.so is loaded (a Vulkan-only RenderDragon build)
+};
+
+/**
+ * @brief True when an EGL context is current on this thread.
+ *
+ * The render hook fires on the game's render thread, which should have a current context; a false
+ * here means a draw would go nowhere. Resolved via EGL's {@code eglGetCurrentContext}; when the EGL
+ * symbol is unavailable this returns false (fail-closed: never claim a context we cannot confirm).
+ */
+PL_EXPORT bool IsEglContextCurrent();
+
+/** @brief The GL backend classification, for the diagnostics report. */
+PL_EXPORT GlBackend GlesBackend();
+
+/** @brief The last GLES error code observed ({@code glGetError}), or 0 when clean. */
+PL_EXPORT int LastGlesError();
+
+/**
+ * @brief Arms/disarms the debug draw cube.
+ *
+ * When armed, {@link NativeCosmeticRenderer::drawFrame} draws one bright cube above the local
+ * player's head regardless of the equipped set, so a device can prove the draw path reaches the
+ * screen. This is a diagnostic aid; whether it appears in game is unverified on device.
+ */
+PL_EXPORT void SetDebugCube(bool enabled);
+
+/** @brief True when the debug cube is armed. */
+PL_EXPORT bool IsDebugCubeEnabled();
+
 /**
  * @brief The native cosmetic mesh rasterizer.
  */

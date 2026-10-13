@@ -53,14 +53,6 @@ const CosmeticImage *FindCapeOverride(std::uint64_t playerKey);
 /** Number of cape overrides currently registered. */
 std::size_t CapeOverrideCount();
 
-/**
- * @brief The first registered cape override's pixels, or nullptr when none.
- *
- * Used as the cosmetic texture atlas for the native mesh renderer (the cape/hat/pet meshes share
- * the equipped cape's atlas). The pixels stay owned by the registry.
- */
-const CosmeticImage *FirstCapeOverride();
-
 /** Replaces the pixels bound to a texture id (the in-memory texture swap). */
 void SetTextureOverride(std::uint64_t textureId, const std::uint8_t *rgba,
                         std::uint32_t width, std::uint32_t height);
@@ -99,10 +91,6 @@ bool CopyCapeOverride(std::uint64_t key, std::vector<std::uint8_t> &out,
 bool CopyTextureOverride(std::uint64_t key, std::vector<std::uint8_t> &out,
                          std::uint32_t &width, std::uint32_t &height);
 
-/** Copies the first cape override's pixels under the lock (the local-player atlas fallback). */
-bool CopyFirstCapeOverride(std::vector<std::uint8_t> &out, std::uint32_t &width,
-                           std::uint32_t &height);
-
 /** @brief The local player's cosmetic pieces, each with its own texture. */
 enum class CosmeticPiece { Cape = 0, Hat = 1, Pet = 2 };
 
@@ -119,6 +107,14 @@ void SetPieceAtlas(CosmeticPiece piece, const std::uint8_t *rgba, std::uint32_t 
 /** Copies a piece's local texture out under the lock. Returns false when the slot is empty. */
 bool CopyPieceAtlas(CosmeticPiece piece, std::vector<std::uint8_t> &out, std::uint32_t &width,
                     std::uint32_t &height);
+
+/**
+ * @brief A bitmask of which per-piece local atlases are populated: bit0 cape, bit1 hat, bit2 pet.
+ *
+ * The diagnostics report reads this to say how many pieces the launcher has published, without
+ * copying the pixels out.
+ */
+int PieceAtlasMask();
 
 /** Number of texture overrides currently registered. */
 std::size_t TextureOverrideCount();

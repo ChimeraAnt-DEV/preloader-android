@@ -258,12 +258,6 @@ std::size_t CapeOverrideCount() {
   return g_capeMeta.size();
 }
 
-const CosmeticImage *FirstCapeOverride() {
-  std::lock_guard<std::mutex> lock(g_mutex);
-  if (g_capeMeta.empty()) return nullptr;
-  return &g_capeMeta.begin()->second;
-}
-
 std::uint32_t OverrideRegistryVersion() {
   return g_registryVersion.load(std::memory_order_acquire);
 }
@@ -289,18 +283,6 @@ bool CopyTextureOverride(std::uint64_t key, std::vector<std::uint8_t> &out,
   out = it->second;
   width = meta == g_textureMeta.end() ? 0 : meta->second.width;
   height = meta == g_textureMeta.end() ? 0 : meta->second.height;
-  return !out.empty();
-}
-
-bool CopyFirstCapeOverride(std::vector<std::uint8_t> &out, std::uint32_t &width,
-                           std::uint32_t &height) {
-  std::lock_guard<std::mutex> lock(g_mutex);
-  if (g_capePixels.empty()) return false;
-  auto it = g_capePixels.begin();
-  auto meta = g_capeMeta.find(it->first);
-  out = it->second;
-  width = meta == g_capeMeta.end() ? 0 : meta->second.width;
-  height = meta == g_capeMeta.end() ? 0 : meta->second.height;
   return !out.empty();
 }
 
@@ -344,6 +326,15 @@ bool CopyPieceAtlas(CosmeticPiece piece, std::vector<std::uint8_t> &out, std::ui
   width = g_pieceAtlasW[index];
   height = g_pieceAtlasH[index];
   return true;
+}
+
+int PieceAtlasMask() {
+  std::lock_guard<std::mutex> lock(g_mutex);
+  int mask = 0;
+  for (int i = 0; i < 3; ++i) {
+    if (!g_pieceAtlas[i].empty()) mask |= (1 << i);
+  }
+  return mask;
 }
 
 void SetTextureOverride(std::uint64_t textureId, const std::uint8_t *rgba,

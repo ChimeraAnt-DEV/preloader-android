@@ -6,6 +6,7 @@
 #include "pl/cosmetics/NativeCosmeticRenderer.hpp"
 #include "pl/cosmetics/NativeRenderHook.hpp"
 #include "pl/runtime/GameCosmetics.h"
+#include "pl/runtime/GamePlayerRender.h"
 #include "pl/runtime/mce_image_hook.hpp"
 
 // The JNI surface for the native cosmetics registry. Java fills the cape/texture overrides and the
@@ -311,6 +312,55 @@ Java_org_chimeramc_client_preloader_PreloaderInput_nativeIsTextureCacheFlushAvai
 JNIEXPORT jboolean JNICALL
 Java_org_chimeramc_client_preloader_PreloaderInput_nativeRequestTextureCacheFlush(JNIEnv *, jclass) {
   return pl::runtime::RequestTextureCacheFlush() ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jintArray JNICALL
+Java_org_chimeramc_client_preloader_PreloaderInput_nativeReadRenderDiagnostics(JNIEnv *env, jclass) {
+  jint values[9];
+  for (int i = 0; i < 9; ++i) values[i] = -1;
+
+  // Slot used and how it was resolved.
+  std::size_t slot = 0;
+  bool byString = false;
+  if (pl::runtime::LastResolvedRenderSlot(slot, byString)) {
+    values[0] = static_cast<jint>(slot);
+    values[1] = byString ? 1 : 0;
+  } else {
+    values[1] = -1;
+  }
+
+  // GL backend and whether a context is current.
+  values[2] = static_cast<jint>(pl::cosmetics::GlesBackend());
+  values[3] = pl::cosmetics::IsEglContextCurrent() ? 1 : 0;
+
+  // Hook installed / frames seen, from the player-render feed.
+  std::uint32_t stats[4] = {0, 0, 0, 0};
+  const bool live = pl::runtime::ReadPlayerRenderStats(stats);
+  values[4] = pl::cosmetics::IsNativeCosmeticRenderHookLive() ? 1 : 0;
+  values[5] = live ? static_cast<jint>(stats[0]) : -1;
+
+  values[6] = pl::cosmetics::LastGlesError();
+
+  std::size_t geometryBytes = pl::runtime::RenderGeometrySize();
+  values[7] = geometryBytes > 0 ? static_cast<jint>(geometryBytes) : -1;
+
+  values[8] = pl::runtime::PieceAtlasMask();
+
+  jintArray out = env->NewIntArray(9);
+  if (out == nullptr) return nullptr;
+  env->SetIntArrayRegion(out, 0, 9, values);
+  return out;
+}
+
+JNIEXPORT void JNICALL
+Java_org_chimeramc_client_preloader_PreloaderInput_nativeSetCosmeticDebugCube(JNIEnv *, jclass,
+                                                                              jboolean enabled) {
+  pl::cosmetics::SetDebugCube(enabled == JNI_TRUE);
+}
+
+JNIEXPORT jboolean JNICALL
+Java_org_chimeramc_client_preloader_PreloaderInput_nativeIsDebugCubeEnabled(JNIEnv *, jclass) {
+  return pl::cosmetics::IsDebugCubeEnabled() ? JNI_TRUE : JNI_FALSE;
 }
 
 } // extern "C"

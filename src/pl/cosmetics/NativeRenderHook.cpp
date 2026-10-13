@@ -138,10 +138,11 @@ void DrawCosmeticsCallback() {
   pl::runtime::RenderGeometryData(geometry);
   if (geometry.empty()) return;
 
-  // Copy each piece's atlas out of the registry under the lock. The old code held a pointer
-  // returned by FirstCapeOverride() and handed it to the renderer after the lock was released, so a
-  // concurrent override change could free the pixels out from under the render thread. Copies are
-  // cheap here (a few tens of KB per frame) and are what makes the read race-free.
+  // Copy each piece's atlas out of the registry under the lock. The old code handed out a pointer
+  // into the registry and used it after the lock was released, so a concurrent override change could
+  // free the pixels out from under the render thread. Copies are cheap here (a few tens of KB per
+  // frame) and are what makes the read race-free. The renderer keys pieces by role, so the local
+  // player's cape/hat/pet never pick up another player's override.
   static thread_local std::vector<std::uint8_t> capePixels;
   static thread_local std::vector<std::uint8_t> hatPixels;
   static thread_local std::vector<std::uint8_t> petPixels;

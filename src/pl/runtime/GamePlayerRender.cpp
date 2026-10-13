@@ -49,6 +49,11 @@ std::atomic<std::uint32_t> g_frameCalls{0};   // calls seen in the current frame
 std::atomic<std::uint32_t> g_totalCalls{0};   // lifetime call count
 std::atomic<long long> g_lastRenderMs{0};
 
+// Which slot the hook resolved to, and how, for the in-app diagnostics report. Set once at install.
+std::atomic<std::size_t> g_resolvedSlot{0};
+std::atomic_bool g_resolvedByString{false};
+std::atomic_bool g_slotKnown{false};
+
 // The single post-render seam. A fixed small table so registration allocates nothing and the
 // render thread never locks. At most 4 consumers (cosmetics + future mods).
 constexpr std::size_t kMaxPostRenderCallbacks = 4;
@@ -140,6 +145,7 @@ void InitPlayerRenderSource(std::size_t vtableIndex) {
   std::uintptr_t renderFn = pl::memory::resolveVtableSlotReferencingString(
       "18LivePlayerRenderer", "variable.player_x_rotation", kGameModule, 200, &resolvedSlot);
   std::size_t slot = resolvedSlot;
+  bool byString = renderFn != 0;
   if (!renderFn) {
     slot = vtableIndex != 0 ? vtableIndex : kDefaultRenderSlot;
     renderFn = pl::memory::resolveVtableFunction("18LivePlayerRenderer", slot, kGameModule);
@@ -172,7 +178,17 @@ void InitPlayerRenderSource(std::size_t vtableIndex) {
   } else {
     preloaderLogger.info("Player-render feed: LivePlayerRenderer::render hooked (slot {})",
                          slot);
+    g_resolvedSlot.store(slot, std::memory_order_relaxed);
+    g_resolvedByString.store(byString, std::memory_order_relaxed);
+    g_slotKnown.store(true, std::memory_order_relaxed);
   }
+}
+
+bool LastResolvedRenderSlot(std::size_t &outSlot, bool &outByString) {
+  if (!g_slotKnown.load(std::memory_order_relaxed)) return false;
+  outSlot = g_resolvedSlot.load(std::memory_order_relaxed);
+  outByString = g_resolvedByString.load(std::memory_order_relaxed);
+  return true;
 }
 
 bool IsPlayerRenderHookLive() {

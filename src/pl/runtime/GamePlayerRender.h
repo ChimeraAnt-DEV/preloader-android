@@ -56,15 +56,29 @@ bool ReadPlayerRenderStats(std::uint32_t out[4]);
 long long LastPlayerRenderMs();
 
 /**
- * @brief A callback that runs once per frame, after the game's own player render, on the render
- *        thread with the GL context current.
+ * @brief The primary-vtable slot the render entry resolved to this session.
+ *
+ * Recorded when the hook installs, so the in-app diagnostics report can say which slot was used and
+ * how it was found (by the render diagnostic string scan, or by the configured/default index).
+ *
+ * @param outSlot receives the slot index when the hook installed.
+ * @param outByString receives true when the string scan found it, false for the index fallback.
+ * @return true when the hook installed (a slot was resolved and detoured).
+ */
+bool LastResolvedRenderSlot(std::size_t &outSlot, bool &outByString);
+
+/**
+ * @brief A callback that runs once per rendered player model, after the game's own render, on the
+ *        render thread with the GL context current.
  *
  * This is the single post-render seam. The player-render slot is hooked exactly once (here), and
  * consumers register into it instead of each installing their own detour on the same slot — two
  * detours on one function duplicated the frame accounting and made ownership ambiguous.
  *
- * The callback runs only for the first render call of a frame (the renderer runs once per rendered
- * player model), so a consumer draws once per frame rather than once per model.
+ * The callback runs on <em>every</em> render call, not once per frame: the renderer is invoked once
+ * per rendered player model and a frame boundary cannot be inferred reliably, so a consumer that must
+ * draw once per frame dedupes internally (the cosmetics callback keys on the published frame
+ * version).
  */
 using PostRenderCallback = void (*)();
 

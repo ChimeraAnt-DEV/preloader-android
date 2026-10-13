@@ -63,6 +63,11 @@ void *GlesSymbol(void *handle, const char *name) {
 
 } // namespace
 
+// Diagnostics state, read by the in-app report on the UI thread and written on the render thread.
+// Plain relaxed atomics: the values are informational counters, not a synchronisation channel.
+std::atomic<int> g_lastGlesError{0};
+std::atomic<bool> g_debugCube{false};
+
 bool GlesFunctions::usable() const {
   return GetError && GetIntegerv && Enable && Disable && GenBuffers && BindBuffer &&
          BufferData && GenVertexArrays && BindVertexArray && EnableVertexAttribArray &&
@@ -123,6 +128,49 @@ GlesFunctions ResolveGles() {
     preloaderLogger.warn("Native cosmetic renderer: GLES library loaded but core symbols missing");
   }
   return g_gles;
+}
+
+bool IsEglContextCurrent() {
+  // eglGetCurrentContext returns EGL_NO_CONTEXT (0) when no context is current on this thread.
+  // Loaded through dlopen so the renderer never hard-links EGL and a build without it reads false.
+  static void *handle = []() -> void * {
+    for (const char *name : {"libEGL.so", "libEGL.so.1"}) {
+      void *h = dlopen(name, RTLD_NOW | RTLD_NOLOAD);
+      if (!h) h = dlopen(name, RTLD_NOW);
+      if (h) return h;
+    }
+    return nullptr;
+  }();
+  if (!handle) return false;
+  using GetCurrentContextFn = void *(*)();
+  auto getCurrentContext = reinterpret_cast<GetCurrentContextFn>(dlsym(handle, "eglGetCurrentContext"));
+  if (!getCurrentContext) return false;
+  return getCurrentContext() != nullptr;
+}
+
+GlBackend GlesBackend() {
+  if (g_gles.usable()) return GlBackend::Gles;
+  // No GLES table: distinguish "Vulkan-only RenderDragon" from "nothing resolved" by probing for a
+  // loaded Vulkan library, which is what a Vulkan-only build links.
+  for (const char *name : {"libvulkan.so", "libvulkan.so.1"}) {
+    void *h = dlopen(name, RTLD_NOW | RTLD_NOLOAD);
+    if (!h) h = dlopen(name, RTLD_NOW);
+    if (h) return GlBackend::Vulkan;
+  }
+  return GlBackend::Unknown;
+}
+
+int LastGlesError() {
+  return g_lastGlesError.load(std::memory_order_relaxed);
+}
+
+void SetDebugCube(bool enabled) {
+  g_debugCube.store(enabled, std::memory_order_relaxed);
+  preloaderLogger.info("Native cosmetic renderer: debug cube {}", enabled ? "armed" : "disarmed");
+}
+
+bool IsDebugCubeEnabled() {
+  return g_debugCube.load(std::memory_order_relaxed);
 }
 
 // -------------------------------------------------------------------------------------------
@@ -596,7 +644,9 @@ CosmeticDrawResult NativeCosmeticRenderer::drawFrame(std::span<const std::uint8_
     preloaderLogger.debug("Native cosmetic renderer: frame invalid, skipping");
     return CosmeticDrawResult::Skipped;
   }
-  if ((flags & 0xFu) == 0) return CosmeticDrawResult::Skipped;
+  // The debug cube draws even with nothing equipped, so a device can prove the draw path on its own.
+  const bool debugCube = g_debugCube.load(std::memory_order_relaxed);
+  if ((flags & 0xFu) == 0 && !debugCube) return CosmeticDrawResult::Skipped;
 
   // Prepare the shader + textures (idempotent, guarded).
   if (!EnsureProgram(gles)) return CosmeticDrawResult::Skipped;
@@ -843,6 +893,51 @@ CosmeticDrawResult NativeCosmeticRenderer::drawFrame(std::span<const std::uint8_
   }
 
   bindVao(0);
+
+  // --- Debug cube (diagnostic) -----------------------------------------------------------
+  // Drawn above the local player's head, in model-pixel space (scaled to blocks by scaledAnchor),
+  // so a device can prove the draw path reaches the screen even with nothing equipped. Unverified
+  // on device: this is the instrument, not a claim that it appears.
+  if (debugCube) {
+    geometry::Mesh cube;
+    const float c = 40.0F;   // head crown is model y=32; sit the cube a little above it
+    const float s = 3.0F;    // half-extent in model pixels
+    const geometry::Vec3f corners[8] = {
+        {-s, c - s, -s}, {s, c - s, -s}, {s, c - s, s}, {-s, c - s, s},
+        {-s, c + s, -s}, {s, c + s, -s}, {s, c + s, s}, {-s, c + s, s}};
+    // Face normals for the six sides, so the headlight shades them.
+    const geometry::Vec3f normals[6] = {
+        {0, 0, -1}, {0, 0, 1}, {-1, 0, 0}, {1, 0, 0}, {0, -1, 0}, {0, 1, 0}};
+    const int faces[6][4] = {{0, 1, 2, 3}, {5, 4, 7, 6}, {4, 0, 3, 7},
+                             {1, 5, 6, 2}, {4, 5, 1, 0}, {3, 2, 6, 7}};
+    for (int f = 0; f < 6; ++f) {
+      const std::uint32_t base = static_cast<std::uint32_t>(cube.vertices.size());
+      for (int v = 0; v < 4; ++v) {
+        geometry::Vertex vertex;
+        vertex.position = corners[faces[f][v]];
+        vertex.normal = normals[f];
+        vertex.uv = geometry::Vec2f{0.0F, 0.0F};
+        cube.vertices.push_back(vertex);
+      }
+      cube.indices.push_back(base + 0);
+      cube.indices.push_back(base + 1);
+      cube.indices.push_back(base + 2);
+      cube.indices.push_back(base + 0);
+      cube.indices.push_back(base + 2);
+      cube.indices.push_back(base + 3);
+    }
+    // Bind the white texture explicitly so the cube is not tinted by a piece atlas.
+    static AtlasSlot debugAtlas;  // texture stays 0 -> AtlasTexture returns the white texture
+    drew |= drawOne(cube, scaledAnchor(Mat4::identity()), debugAtlas, PieceAtlas{},
+                    1.0F, 0.35F, 0.85F, 1.0F);
+  }
+
+  // Capture the last GL error for the diagnostics report (read-and-clear, so it is the newest error).
+  if (gles.GetError) {
+    const GLenum err = reinterpret_cast<GLenum (*)()>(gles.GetError)();
+    g_lastGlesError.store(static_cast<int>(err), std::memory_order_relaxed);
+  }
+
   RestoreState(gles, state);
   if (drew) {
     preloaderLogger.debug("Native cosmetic renderer: drew cosmetic meshes");
