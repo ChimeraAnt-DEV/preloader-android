@@ -1,4 +1,5 @@
 #include "pl/runtime/JavaRuntime.h"
+#include "pl/runtime/SafeJni.hpp"
 #include "pl/Platform.hpp"
 #include <algorithm>
 #include <string_view>
@@ -90,7 +91,7 @@ bool SetClipboardTextImpl(std::string_view text) {
 
   bool success = false;
   jclass activityClass = env->GetObjectClass(g_activity);
-  jstring serviceName = env->NewStringUTF("clipboard");
+  jstring serviceName = pl::jni::NewString(env, "clipboard");
   jobject manager = nullptr;
   if (activityClass && serviceName) {
     jmethodID getSystemService = env->GetMethodID(
@@ -100,9 +101,9 @@ bool SetClipboardTextImpl(std::string_view text) {
 
   jclass clipDataClass = env->FindClass("android/content/ClipData");
   jclass clipboardClass = env->FindClass("android/content/ClipboardManager");
-  jstring label = env->NewStringUTF("");
+  jstring label = pl::jni::NewString(env, "");
   std::string value(text);
-  jstring content = env->NewStringUTF(value.c_str());
+  jstring content = pl::jni::NewString(env, value.c_str());
   jobject clip = nullptr;
   if (manager && clipDataClass && label && content) {
     jmethodID newPlainText = env->GetStaticMethodID(
@@ -158,7 +159,7 @@ bool CallActivityStringMethod(const char *methodName, const std::string &value) 
   if (cls) {
     jmethodID mid = env->GetMethodID(cls, methodName, "(Ljava/lang/String;)V");
     if (mid) {
-      jstring argument = env->NewStringUTF(value.c_str());
+      jstring argument = pl::jni::NewString(env, value.c_str());
       if (argument) {
         env->CallVoidMethod(g_activity, mid, argument);
         env->DeleteLocalRef(argument);
@@ -210,7 +211,7 @@ pl::platform::HttpResponse HttpGetImpl(std::string_view url, int timeoutMs) {
     return !cls || env->ExceptionCheck() ? nullptr : env->GetMethodID(cls, name, signature);
   };
   auto string = [&](const char *value) -> jstring {
-    return env->ExceptionCheck() ? nullptr : env->NewStringUTF(value);
+    return env->ExceptionCheck() ? nullptr : pl::jni::NewString(env, value);
   };
 
   const bool success = [&]() -> bool {

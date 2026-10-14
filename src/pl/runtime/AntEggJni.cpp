@@ -1,5 +1,6 @@
 #include "pl/runtime/AntEggLoader.h"
 #include "pl/runtime/JavaRuntime.h"
+#include "pl/runtime/SafeJni.hpp"
 
 #include <jni.h>
 
@@ -19,7 +20,7 @@ std::string ToStdString(JNIEnv* env, jstring value) {
 jstring NewErrorMessage(JNIEnv* env, const std::string& error) {
   // An empty string means success; the Java side checks isEmpty() rather than null so the
   // common success path never allocates a message.
-  return env->NewStringUTF(error.c_str());
+  return pl::jni::NewString(env, error);
 }
 
 }  // namespace

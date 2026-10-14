@@ -4,6 +4,7 @@
 #include <string>
 
 #include "pl/runtime/OptifineMode.h"
+#include "pl/runtime/SafeJni.hpp"
 
 namespace {
 
@@ -26,7 +27,7 @@ jobjectArray ToStateArray(JNIEnv *env, const pl::runtime::OptifineState &state) 
 
   int slot = 0;
   auto put = [&](const std::string &text) {
-    jstring value = env->NewStringUTF(text.c_str());
+    jstring value = pl::jni::NewString(env, text);
     if (value != nullptr) {
       env->SetObjectArrayElement(result, slot, value);
       env->DeleteLocalRef(value);
