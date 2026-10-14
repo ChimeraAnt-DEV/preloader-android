@@ -50,6 +50,19 @@ bool IsPlayerRenderHookLive();
 bool ReadPlayerRenderStats(std::uint32_t out[4]);
 
 /**
+ * @brief Reads the published frame snapshot from any thread.
+ *
+ * <p>This is the off-render-thread hand-off: the render thread publishes a self-contained record
+ * (a seqlock write, no lock, no allocation) and this reads a consistent copy of it. A consumer that
+ * needs the game's per-frame state should read here and do its work off the render thread rather than
+ * touching the render thread's live data.
+ *
+ * @param out receives {renderTick, callsThisFrame, totalCalls, lastRenderMs}
+ * @return true when a snapshot was available and copied
+ */
+bool ReadFrameSnapshot(std::uint64_t out[4]);
+
+/**
  * @brief Returns the monotonic timestamp of the most recent player-render call.
  * @return Milliseconds, or 0 when the renderer has not run.
  */

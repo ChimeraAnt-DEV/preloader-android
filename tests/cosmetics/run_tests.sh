@@ -66,6 +66,9 @@ compile_run HookInstallGateTest \
 compile_run JniAttachTest \
   "$here/JniAttachTest.cpp"
 
+compile_run SnapshotChannelTest \
+  "$here/SnapshotChannelTest.cpp" -pthread
+
 compile_run CosmeticParticlesTest \
   "$root/src/pl/cosmetics/CosmeticParticles.cpp" \
   "$here/CosmeticParticlesTest.cpp"
