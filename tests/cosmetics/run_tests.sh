@@ -60,6 +60,9 @@ compile_run VersionCompareTest \
 compile_run Utf8Test \
   "$here/Utf8Test.cpp"
 
+compile_run HookInstallGateTest \
+  "$here/HookInstallGateTest.cpp"
+
 compile_run CosmeticParticlesTest \
   "$root/src/pl/cosmetics/CosmeticParticles.cpp" \
   "$here/CosmeticParticlesTest.cpp"
