@@ -63,6 +63,9 @@ compile_run Utf8Test \
 compile_run HookInstallGateTest \
   "$here/HookInstallGateTest.cpp"
 
+compile_run JniAttachTest \
+  "$here/JniAttachTest.cpp"
+
 compile_run CosmeticParticlesTest \
   "$root/src/pl/cosmetics/CosmeticParticles.cpp" \
   "$here/CosmeticParticlesTest.cpp"
