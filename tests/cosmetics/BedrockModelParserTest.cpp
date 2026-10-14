@@ -189,6 +189,69 @@ void testPet() {
   check(total == 6 * 24, "six cubes -> 144 vertices");
 }
 
+// The identifier -> skeleton slot mapping. A pet rides the player root (slot B); a hat or a cape is
+// worn on a player bone (slot A); anything else claims no skeleton bone.
+void testSkeletonSlots() {
+  check(SlotForIdentifier("geometry.glowberry.pet") == SkeletonSlot::B, "pet id -> slot B");
+  check(SlotForIdentifier("geometry.glowberry.hat") == SkeletonSlot::A, "hat id -> slot A");
+  check(SlotForIdentifier("geometry.chimera_cape") == SkeletonSlot::A, "cape id -> slot A");
+  check(SlotForIdentifier("geometry.Glowberry.PET") == SkeletonSlot::B, "slot mapping is case-insensitive");
+  check(SlotForIdentifier("geometry.unknown.thing") == SkeletonSlot::None, "unknown id -> no slot");
+  check(SlotForIdentifier("") == SkeletonSlot::None, "empty id -> no slot");
+}
+
+// The authored-bone -> player-skeleton-bone mapping must be total for a real slot, so an animation
+// tick can never look up a null bone matrix. This is the Slot A/B fix.
+void testSkeletonBoneMapping() {
+  // A pet's head follows the player head; its legs follow the player legs; body/tail ride the body.
+  check(PlayerBoneFor(SkeletonSlot::B, "head") == SkeletonBone::kHead, "pet head -> head");
+  check(PlayerBoneFor(SkeletonSlot::B, "leg_fl") == SkeletonBone::kLegs, "pet leg -> legs");
+  check(PlayerBoneFor(SkeletonSlot::B, "leg_br") == SkeletonBone::kLegs, "pet rear leg -> legs");
+  check(PlayerBoneFor(SkeletonSlot::B, "body") == SkeletonBone::kBody, "pet body -> body");
+  check(PlayerBoneFor(SkeletonSlot::B, "tail") == SkeletonBone::kBody, "pet tail -> body");
+  // An authored name that is not in the vocabulary still resolves (the total fallback).
+  check(PlayerBoneFor(SkeletonSlot::B, "dragon_spine") == SkeletonBone::kBody,
+        "unknown authored bone -> body (never empty for a real slot)");
+  // A hat is worn on the head.
+  check(PlayerBoneFor(SkeletonSlot::A, "hat") == SkeletonBone::kBody,
+        "a hat's own bone rides the body anchor, not the head directly");
+  // A slot of None claims nothing.
+  check(PlayerBoneFor(SkeletonSlot::None, "head").empty(), "no slot -> no skeleton bone");
+
+  // Every bone of the shipped pet fixture resolves to a real skeleton bone.
+  BedrockGeometry geometry;
+  check(BedrockGeometryParser::parse(kPet, geometry), "pet parses for the bone mapping");
+  std::vector<Mesh> meshes = GeometryMeshBuilder::build(geometry);
+  check(meshes.size() == 6, "pet meshes built");
+  for (const Mesh &mesh : meshes) {
+    check(mesh.slot == SkeletonSlot::B, "every pet mesh carries slot B");
+    check(!mesh.skeletonBone.empty(), "every pet mesh resolves a skeleton bone (no null bone)");
+  }
+
+  // The frame-track fallback: a head follows the head track, a leg the leg track, a body nothing.
+  check(FrameBoneForSkeleton(SkeletonBone::kHead) == "head", "head -> head track");
+  check(FrameBoneForSkeleton(SkeletonBone::kLegs) == "leg_a", "legs -> leg track");
+  check(FrameBoneForSkeleton(SkeletonBone::kBody).empty(), "body has no per-bone track");
+}
+
+// A hat mesh carries slot A; a wing (unclassified id) carries no slot and claims no skeleton bone.
+void testMeshesCarryTheirSlot() {
+  BedrockGeometry hat;
+  check(BedrockGeometryParser::parse(kHat112, hat), "hat parses");
+  std::vector<Mesh> hatMeshes = GeometryMeshBuilder::build(hat);
+  check(hatMeshes.size() == 1, "one hat mesh");
+  check(hatMeshes.front().slot == SkeletonSlot::A, "hat mesh carries slot A");
+  check(!hatMeshes.front().skeletonBone.empty(), "hat mesh resolves a skeleton bone");
+
+  BedrockGeometry wing;
+  check(BedrockGeometryParser::parse(kWing121, wing), "wing parses");
+  std::vector<Mesh> wingMeshes = GeometryMeshBuilder::build(wing);
+  check(wingMeshes.size() == 2, "two wing meshes");
+  check(wingMeshes.front().slot == SkeletonSlot::None,
+        "an unclassified id claims no skeleton bone (renders where its own bones place it)");
+  check(wingMeshes.front().skeletonBone.empty(), "no slot -> empty skeleton bone");
+}
+
 void testMalformed() {
   BedrockGeometry geometry;
   check(!BedrockGeometryParser::parse("", geometry), "empty rejected");
@@ -248,6 +311,9 @@ int main() {
   testHat112();
   testWing121();
   testPet();
+  testSkeletonSlots();
+  testSkeletonBoneMapping();
+  testMeshesCarryTheirSlot();
   testMalformed();
   testBoxUvLayout();
   testFormatSupport();

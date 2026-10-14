@@ -57,6 +57,18 @@ compile_run NativeCosmeticDataTest \
 compile_run VersionCompareTest \
   "$here/VersionCompareTest.cpp"
 
+compile_run Utf8Test \
+  "$here/Utf8Test.cpp"
+
+compile_run HookInstallGateTest \
+  "$here/HookInstallGateTest.cpp"
+
+compile_run JniAttachTest \
+  "$here/JniAttachTest.cpp"
+
+compile_run SnapshotChannelTest \
+  "$here/SnapshotChannelTest.cpp" -pthread
+
 compile_run CosmeticParticlesTest \
   "$root/src/pl/cosmetics/CosmeticParticles.cpp" \
   "$here/CosmeticParticlesTest.cpp"

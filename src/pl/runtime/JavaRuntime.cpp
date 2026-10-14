@@ -1,4 +1,5 @@
 #include "pl/runtime/JavaRuntime.h"
+#include "pl/runtime/SafeJni.hpp"
 #include "pl/Platform.hpp"
 #include <algorithm>
 #include <string_view>
@@ -9,20 +10,46 @@ namespace {
 JavaVM *g_vm = nullptr;
 jobject g_activity = nullptr;
 
-bool AttachCurrentThread(JNIEnv **env) {
-  if (!g_vm || !env) return false;
-#if defined(__ANDROID__)
-  return g_vm->AttachCurrentThread(env, nullptr) == JNI_OK;
-#else
-  return g_vm->AttachCurrentThread(reinterpret_cast<void **>(env), nullptr) == JNI_OK;
-#endif
-}
-
 } // namespace
 
 void SetJavaVm(JavaVM *vm) { g_vm = vm; }
 
 JavaVM *GetJavaVm() { return g_vm; }
+
+ScopedJniEnv::ScopedJniEnv() {
+  if (!g_vm) return;
+  JNIEnv *env = nullptr;
+  const jint status = g_vm->GetEnv(reinterpret_cast<void **>(&env), JNI_VERSION_1_4);
+  const pl::jni::AttachAction action = pl::jni::DecideAttach(static_cast<int>(status), true);
+  if (!pl::jni::CanUseEnv(action)) return;
+  if (action == pl::jni::AttachAction::AttachAndDetach) {
+#if defined(__ANDROID__)
+    if (g_vm->AttachCurrentThread(&env, nullptr) != JNI_OK) return;
+#else
+    if (g_vm->AttachCurrentThread(reinterpret_cast<void **>(&env), nullptr) != JNI_OK) return;
+#endif
+    ownsAttachment_ = true;
+  }
+  env_ = env;
+  // Bound the local reference table for the duration. A long-running caller (a receive loop) that
+  // never pushed a frame would otherwise accumulate references and eventually fail every call.
+  if (env_ != nullptr && env_->PushLocalFrame(64) == 0) {
+    framePushed_ = true;
+  }
+}
+
+void ScopedJniEnv::release() {
+  if (released_) return;
+  released_ = true;
+  if (env_ != nullptr && framePushed_) {
+    env_->PopLocalFrame(nullptr);
+  }
+  if (ownsAttachment_ && g_vm != nullptr) {
+    g_vm->DetachCurrentThread();
+  }
+}
+
+ScopedJniEnv::~ScopedJniEnv() { release(); }
 
 void SetActivity(JNIEnv *env, jobject activity) {
   ClearActivity(env);
@@ -39,22 +66,11 @@ void ClearActivity(JNIEnv *env) {
 }
 
 void CallActivityVoidMethod(const char *methodName) {
-  if (!g_vm || !g_activity) {
-    return;
-  }
+  if (!g_activity) return;
 
-  JNIEnv *env = nullptr;
-  bool attached = false;
-  const jint status =
-      g_vm->GetEnv(reinterpret_cast<void **>(&env), JNI_VERSION_1_4);
-  if (status == JNI_EDETACHED) {
-    if (!AttachCurrentThread(&env)) {
-      return;
-    }
-    attached = true;
-  } else if (status != JNI_OK) {
-    return;
-  }
+  ScopedJniEnv scope;
+  if (!scope.valid()) return;
+  JNIEnv *env = scope.env();
 
   jclass cls = env->GetObjectClass(g_activity);
   if (cls) {
@@ -62,35 +78,24 @@ void CallActivityVoidMethod(const char *methodName) {
     if (mid) {
       env->CallVoidMethod(g_activity, mid);
     }
-    env->DeleteLocalRef(cls);
   }
+  // The scope's destructor clears the local frame and detaches if it attached; an exception is
+  // cleared before the frame pop so a pending throwable cannot make PopLocalFrame abort.
   if (env->ExceptionCheck()) {
     env->ExceptionClear();
   }
-
-  if (attached) {
-    g_vm->DetachCurrentThread();
-  }
 }
 
-
 bool SetClipboardTextImpl(std::string_view text) {
-  if (!g_vm || !g_activity) return false;
+  if (!g_activity) return false;
 
-  JNIEnv *env = nullptr;
-  bool attached = false;
-  const jint status =
-      g_vm->GetEnv(reinterpret_cast<void **>(&env), JNI_VERSION_1_4);
-  if (status == JNI_EDETACHED) {
-    if (!AttachCurrentThread(&env)) return false;
-    attached = true;
-  } else if (status != JNI_OK) {
-    return false;
-  }
+  ScopedJniEnv scope;
+  if (!scope.valid()) return false;
+  JNIEnv *env = scope.env();
 
   bool success = false;
   jclass activityClass = env->GetObjectClass(g_activity);
-  jstring serviceName = env->NewStringUTF("clipboard");
+  jstring serviceName = pl::jni::NewString(env, "clipboard");
   jobject manager = nullptr;
   if (activityClass && serviceName) {
     jmethodID getSystemService = env->GetMethodID(
@@ -100,9 +105,8 @@ bool SetClipboardTextImpl(std::string_view text) {
 
   jclass clipDataClass = env->FindClass("android/content/ClipData");
   jclass clipboardClass = env->FindClass("android/content/ClipboardManager");
-  jstring label = env->NewStringUTF("");
-  std::string value(text);
-  jstring content = env->NewStringUTF(value.c_str());
+  jstring label = pl::jni::NewString(env, "");
+  jstring content = pl::jni::NewString(env, text);
   jobject clip = nullptr;
   if (manager && clipDataClass && label && content) {
     jmethodID newPlainText = env->GetStaticMethodID(
@@ -123,81 +127,48 @@ bool SetClipboardTextImpl(std::string_view text) {
     env->ExceptionClear();
     success = false;
   }
-  if (clip) env->DeleteLocalRef(clip);
-  if (content) env->DeleteLocalRef(content);
-  if (label) env->DeleteLocalRef(label);
-  if (clipboardClass) env->DeleteLocalRef(clipboardClass);
-  if (clipDataClass) env->DeleteLocalRef(clipDataClass);
-  if (manager) env->DeleteLocalRef(manager);
-  if (serviceName) env->DeleteLocalRef(serviceName);
-  if (activityClass) env->DeleteLocalRef(activityClass);
-  if (attached) g_vm->DetachCurrentThread();
+  // No per-reference DeleteLocalRef calls: the scope's frame pop releases them all at once, which is
+  // both cheaper and correct even on the early-return paths above.
   return success;
 }
 
 bool CallActivityStringMethod(const char *methodName, const std::string &value) {
-  if (!g_vm || !g_activity) {
-    return false;
-  }
+  if (!g_activity) return false;
 
-  JNIEnv *env = nullptr;
-  bool attached = false;
-  const jint status =
-      g_vm->GetEnv(reinterpret_cast<void **>(&env), JNI_VERSION_1_4);
-  if (status == JNI_EDETACHED) {
-    if (!AttachCurrentThread(&env)) {
-      return false;
-    }
-    attached = true;
-  } else if (status != JNI_OK) {
-    return false;
-  }
+  ScopedJniEnv scope;
+  if (!scope.valid()) return false;
+  JNIEnv *env = scope.env();
 
   bool called = false;
   jclass cls = env->GetObjectClass(g_activity);
   if (cls) {
     jmethodID mid = env->GetMethodID(cls, methodName, "(Ljava/lang/String;)V");
     if (mid) {
-      jstring argument = env->NewStringUTF(value.c_str());
+      jstring argument = pl::jni::NewString(env, value);
       if (argument) {
         env->CallVoidMethod(g_activity, mid, argument);
-        env->DeleteLocalRef(argument);
         called = !env->ExceptionCheck();
       }
     }
-    env->DeleteLocalRef(cls);
   }
   if (env->ExceptionCheck()) {
     env->ExceptionClear();
     called = false;
-  }
-
-  if (attached) {
-    g_vm->DetachCurrentThread();
   }
   return called;
 }
 
 pl::platform::HttpResponse HttpGetImpl(std::string_view url, int timeoutMs) {
   pl::platform::HttpResponse result;
-  if (!g_vm || url.empty()) return result;
+  if (url.empty()) return result;
   if (!url.starts_with("https://") && !url.starts_with("http://")) return result;
 
-  JNIEnv *env = nullptr;
-  bool attached = false;
-  const jint vmStatus = g_vm->GetEnv(reinterpret_cast<void **>(&env), JNI_VERSION_1_4);
-  if (vmStatus == JNI_EDETACHED) {
-    if (!AttachCurrentThread(&env)) return result;
-    attached = true;
-  } else if (vmStatus != JNI_OK) {
-    return result;
-  }
-
-  if (env->PushLocalFrame(32) < 0) {
-    env->ExceptionClear();
-    if (attached) g_vm->DetachCurrentThread();
-    return result;
-  }
+  // The scoped attachment replaces the hand-rolled GetEnv/Attach/Detach here: it attaches only when
+  // the thread was detached and detaches on every exit path (including the early returns inside the
+  // lambda below), and its local frame bounds the reference table for the whole request.
+  ScopedJniEnv scope;
+  if (!scope.valid()) return result;
+  JNIEnv *env = scope.env();
 
   jobject connection = nullptr;
   jobject input = nullptr;
@@ -210,7 +181,7 @@ pl::platform::HttpResponse HttpGetImpl(std::string_view url, int timeoutMs) {
     return !cls || env->ExceptionCheck() ? nullptr : env->GetMethodID(cls, name, signature);
   };
   auto string = [&](const char *value) -> jstring {
-    return env->ExceptionCheck() ? nullptr : env->NewStringUTF(value);
+    return env->ExceptionCheck() ? nullptr : pl::jni::NewString(env, value);
   };
 
   const bool success = [&]() -> bool {
@@ -319,8 +290,7 @@ pl::platform::HttpResponse HttpGetImpl(std::string_view url, int timeoutMs) {
     env->CallVoidMethod(connection, disconnect);
     if (env->ExceptionCheck()) env->ExceptionClear();
   }
-  env->PopLocalFrame(nullptr);
-  if (attached) g_vm->DetachCurrentThread();
+  // The scope pops the local frame and detaches if it attached; nothing to do here.
   return result;
 }
 

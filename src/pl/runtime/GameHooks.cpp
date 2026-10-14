@@ -17,6 +17,7 @@
 #include "pl/runtime/GameCosmetics.h"
 #include "pl/runtime/GameLocalPlayer.h"
 #include "pl/runtime/GamePlayerRender.h"
+#include "pl/runtime/HookInstallGate.hpp"
 
 namespace pl::runtime {
 namespace {
@@ -26,6 +27,19 @@ std::atomic_bool g_isHudScreenOpen{false};
 std::atomic_bool g_isShowingMenu{false};
 std::atomic_bool g_forceGlobalModMenu{false};
 std::once_flag g_gameHooksOnce;
+std::once_flag g_armOnce;
+
+// The deferred-install gate. Armed at preloader init; ticked from the game's frame pump. Guarded by
+// an atomic flag so the common per-frame path is a single load and returns.
+HookInstallGate g_installGate;
+std::atomic_bool g_installArmed{false};
+std::atomic_bool g_installResolved{false};
+
+long long MonotonicMs() {
+  timespec ts{};
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return static_cast<long long>(ts.tv_sec) * 1000LL + ts.tv_nsec / 1000000LL;
+}
 
 void (*orig_PauseMenuDtor)(void *) = nullptr;
 void hook_PauseMenuDtor(void *_this) {
@@ -136,6 +150,7 @@ void ConfigureGameHooks(std::string rulesPath, std::string minecraftVersion) {
 
 void InitGameHooks() {
   std::call_once(g_gameHooksOnce, [] {
+    g_installResolved.store(true, std::memory_order_release);
     g_forceGlobalModMenu.store(false, std::memory_order_relaxed);
     // Hard guard: never install a detour against an unresolved address. When the launcher has
     // not delivered the signature rules -- the library was loaded after the rules call, a stale
@@ -226,6 +241,45 @@ void InitGameHooks() {
 
     preloaderLogger.info("Preloader runtime hooks installed (5/5)");
   });
+}
+
+void ArmGameHookInstall() {
+  std::call_once(g_armOnce, [] {
+    g_installGate.start(MonotonicMs());
+    g_installArmed.store(true, std::memory_order_release);
+    preloaderLogger.info(
+        "Preloader hook install armed; deferring until the game runtime is up");
+  });
+}
+
+bool PumpGameHookInstall() {
+  if (g_installResolved.load(std::memory_order_acquire)) return true;
+  if (!g_installArmed.load(std::memory_order_acquire)) return false;
+
+  const InstallDecision decision = g_installGate.tick(MonotonicMs());
+  if (decision == InstallDecision::Wait) return false;
+
+  if (decision == InstallDecision::GiveUp) {
+    // The runtime never came up within the budget. Mark it resolved so the state is not left
+    // "pending" forever, and leave the game vanilla rather than patching something half-mapped.
+    g_installResolved.store(true, std::memory_order_release);
+    preloaderLogger.warn(
+        "Preloader hook install gave up after {} frame ticks; the runtime did not come up",
+        g_installGate.frameTicks());
+    return true;
+  }
+
+  preloaderLogger.info("Preloader hook install running after {} frame tick(s)",
+                       g_installGate.frameTicks());
+  InitGameHooks();
+  return true;
+}
+
+bool GameHookInstallResolved() { return g_installResolved.load(std::memory_order_acquire); }
+
+bool GameHookInstallPending() {
+  return g_installArmed.load(std::memory_order_acquire)
+      && !g_installResolved.load(std::memory_order_acquire);
 }
 
 bool IsPauseMenuOpen() {

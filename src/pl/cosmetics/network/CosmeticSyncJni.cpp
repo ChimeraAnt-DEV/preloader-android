@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "pl/cosmetics/network/CosmeticSocketProtocol.hpp"
+#include "pl/runtime/SafeJni.hpp"
 
 namespace {
 
@@ -25,7 +26,7 @@ std::string toStd(JNIEnv *env, jstring value) {
 }
 
 jstring toJava(JNIEnv *env, const std::string &value) {
-  return env->NewStringUTF(value.c_str());
+  return pl::jni::NewString(env, value);
 }
 
 } // namespace

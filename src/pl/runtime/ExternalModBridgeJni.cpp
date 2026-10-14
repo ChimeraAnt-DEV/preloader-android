@@ -8,6 +8,7 @@
 
 #include "pl/Logger.hpp"
 #include "pl/runtime/ModMenuBridge.h"
+#include "pl/runtime/SafeJni.hpp"
 
 static nlohmann::json modulePayload(const pl::runtime::RegisteredModule &mod) {
     nlohmann::json payload = {
@@ -71,11 +72,11 @@ Java_org_chimeramc_client_core_mods_inbuilt_ExternalModBridge_nativeGetExternalM
     (void)clazz;
     pl::runtime::RegisteredModule mod;
     if (!pl::runtime::GetRegisteredModuleInfo(index, mod)) {
-        return env->NewStringUTF("{}");
+        return pl::jni::NewString(env, "{}");
     }
 
     const std::string json = modulePayload(mod).dump();
-    return env->NewStringUTF(json.c_str());
+    return pl::jni::NewString(env, json.c_str());
 }
 
 JNIEXPORT jstring JNICALL
@@ -87,20 +88,20 @@ Java_org_chimeramc_client_core_mods_inbuilt_ExternalModBridge_nativeGetExternalM
     nlohmann::json payload = nlohmann::json::array();
     for (const auto &module : modules) payload.push_back(modulePayload(module));
     const std::string json = payload.dump();
-    return env->NewStringUTF(json.c_str());
+    return pl::jni::NewString(env, json.c_str());
 }
 
 JNIEXPORT jstring JNICALL
 Java_org_chimeramc_client_core_mods_inbuilt_ExternalModBridge_nativeGetExternalModConfigSchema(
         JNIEnv *env, jclass clazz, jstring moduleId) {
     (void)clazz;
-    if (!moduleId) return env->NewStringUTF("");
+    if (!moduleId) return pl::jni::NewString(env, "");
     const char *id = env->GetStringUTFChars(moduleId, nullptr);
-    if (!id) return env->NewStringUTF("");
+    if (!id) return pl::jni::NewString(env, "");
     std::string schema;
     pl::runtime::GetRegisteredModuleConfigSchema(id, schema);
     env->ReleaseStringUTFChars(moduleId, id);
-    return env->NewStringUTF(schema.c_str());
+    return pl::jni::NewString(env, schema.c_str());
 }
 
 JNIEXPORT jlong JNICALL
@@ -167,7 +168,7 @@ JNIEXPORT jstring JNICALL
 (void)clazz;
 pl::runtime::RegisteredButton button;
 if (!pl::runtime::GetRegisteredButtonInfo(index, button)) {
-return env->NewStringUTF("{}");
+return pl::jni::NewString(env, "{}");
 }
 
 nlohmann::json payload = {
@@ -194,7 +195,7 @@ nlohmann::json payload = {
                               {"height_scale", button.height_scale}}},
 };
 const std::string json = payload.dump();
-return env->NewStringUTF(json.c_str());
+return pl::jni::NewString(env, json.c_str());
 }
 
 JNIEXPORT jbyteArray JNICALL
@@ -304,7 +305,7 @@ Java_org_chimeramc_client_core_mods_inbuilt_ExternalModBridge_nativeGetHudEditor
         payload.push_back(hudEditorElementPayload(element));
     }
     const std::string json = payload.dump();
-    return env->NewStringUTF(json.c_str());
+    return pl::jni::NewString(env, json.c_str());
 }
 
 JNIEXPORT void JNICALL
@@ -405,7 +406,7 @@ auto setStringElement = [&](jobjectArray array, jsize index,
     if (value.empty()) {
         return true;
     }
-    jstring str = env->NewStringUTF(value.c_str());
+    jstring str = pl::jni::NewString(env, value.c_str());
     if (!str) {
         return false;
     }

@@ -78,7 +78,30 @@ Java_org_chimeramc_client_core_mods_ModManager_nativeEnableLoadedMods(
   (void)env;
   (void)clazz;
   ModManager::EnableLoadedMods();
-  pl::runtime::InitGameHooks();
+  // The hooks must not install here: this runs in the game activity's onCreate, before the engine's
+  // graphics backend and the libminecraftpe.so relocation have finished, so the RTTI/vtable
+  // resolution sees a partially mapped module and the install silently bails ("Hook installed: no").
+  // Arm the deferred install instead; it runs from the game's own frame tick via
+  // PumpGameHookInstall, by which point the runtime is up and the code patch runs on the render
+  // thread rather than racing it.
+  pl::runtime::ArmGameHookInstall();
+}
+
+JNIEXPORT jboolean JNICALL
+Java_org_chimeramc_client_core_mods_ModManager_nativePumpGameHookInstall(
+    JNIEnv *env, jclass clazz) {
+  (void)env;
+  (void)clazz;
+  // Cheap on the common path: a single atomic load once the install has run.
+  return pl::runtime::PumpGameHookInstall() ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_org_chimeramc_client_core_mods_ModManager_nativeIsGameHookInstallPending(
+    JNIEnv *env, jclass clazz) {
+  (void)env;
+  (void)clazz;
+  return pl::runtime::GameHookInstallPending() ? JNI_TRUE : JNI_FALSE;
 }
 
 JNIEXPORT void JNICALL

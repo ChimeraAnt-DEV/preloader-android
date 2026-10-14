@@ -2,10 +2,14 @@
 
 #include <atomic>
 #include <cstdint>
+#include <cstring>
 #include <ctime>
+#include <span>
+#include <vector>
 
 #include "pl/Logger.hpp"
 #include "pl/Render.hpp"
+#include "pl/ipc/SnapshotChannel.hpp"
 #include "pl/memory/Hook.hpp"
 #include "pl/memory/Signature.hpp"
 #include "pl/memory/Vtable.hpp"
@@ -49,6 +53,13 @@ std::atomic<std::uint32_t> g_frameCalls{0};   // calls seen in the current frame
 std::atomic<std::uint32_t> g_totalCalls{0};   // lifetime call count
 std::atomic<long long> g_lastRenderMs{0};
 
+// The off-render-thread hand-off. The render thread only ever *publishes* a small self-contained
+// record here (a seqlock write, no lock, no allocation); a consumer on another thread reads a
+// consistent copy and does its heavier work against that. Without it a consumer reading the game's
+// live per-frame state directly would race the render thread — the torn read / use-after-free shape
+// that killed modules. The payload is {renderTick, callsThisFrame, totalCalls, lastRenderMs}.
+pl::ipc::SnapshotChannel g_frameSnapshot(4 * sizeof(std::uint64_t));
+
 // Which slot the hook resolved to, and how, for the in-app diagnostics report. Set once at install.
 std::atomic<std::size_t> g_resolvedSlot{0};
 std::atomic_bool g_resolvedByString{false};
@@ -90,6 +101,18 @@ void HookRender(void *a, void *b, void *c, void *d, void *e, void *f, void *g, v
   }
   g_totalCalls.fetch_add(1, std::memory_order_relaxed);
   g_lastRenderMs.store(now, std::memory_order_relaxed);
+
+  // Publish a self-contained frame record for off-thread consumers. The render thread does only this
+  // bounded seqlock write (no lock, no allocation); the consumer reads a consistent copy elsewhere.
+  {
+    std::uint64_t record[4];
+    record[0] = g_renderTick.load(std::memory_order_relaxed);
+    record[1] = g_frameCalls.load(std::memory_order_relaxed);
+    record[2] = g_totalCalls.load(std::memory_order_relaxed);
+    record[3] = static_cast<std::uint64_t>(now);
+    g_frameSnapshot.publish(std::span<const std::uint8_t>(
+        reinterpret_cast<const std::uint8_t *>(record), sizeof(record)));
+  }
 
   if (g_origRender) {
     g_origRender(a, b, c, d, e, f, g, h);
@@ -210,6 +233,14 @@ bool ReadPlayerRenderStats(std::uint32_t out[4]) {
 
 long long LastPlayerRenderMs() {
   return g_lastRenderMs.load(std::memory_order_relaxed);
+}
+
+bool ReadFrameSnapshot(std::uint64_t out[4]) {
+  if (out == nullptr) return false;
+  std::vector<std::uint8_t> copy;
+  if (!g_frameSnapshot.read(copy) || copy.size() != 4 * sizeof(std::uint64_t)) return false;
+  std::memcpy(out, copy.data(), sizeof(std::uint64_t) * 4);
+  return true;
 }
 
 } // namespace pl::runtime
