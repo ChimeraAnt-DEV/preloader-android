@@ -818,10 +818,24 @@ CosmeticDrawResult NativeCosmeticRenderer::drawFrame(std::span<const std::uint8_
     const Mat4 local = Mat4::multiply(petOffset, Mat4::multiply(bedrockToPlayer, petScaleMat));
     for (auto &piece : pieces) {
       geometry::Mesh mesh = piece.mesh;
-      // Apply the per-bone animation offset about the bone's pivot on the CPU, then upload.
+      // Apply the per-bone animation offset about the bone's pivot on the CPU, then upload. Look the
+      // authored bone up first; when the authored name has no track, fall back to the track for the
+      // mesh's player-skeleton bone (an authored pet's "leg_a" and a skeleton "legs" both map to the
+      // leg track), so a mesh whose authored name is arbitrary still animates instead of being left
+      // to move against nothing.
+      const Mat4 *rotation = nullptr;
       auto it = rotByBone.find(piece.mesh.bone);
-      if (it != rotByBone.end() && piece.hasPivot) {
-        mesh = RotateMeshByBoneMatrix(mesh, piece.pivot, it->second);
+      if (it != rotByBone.end()) {
+        rotation = &it->second;
+      } else if (!piece.mesh.skeletonBone.empty()) {
+        const std::string track = geometry::FrameBoneForSkeleton(piece.mesh.skeletonBone);
+        if (!track.empty()) {
+          auto fallback = rotByBone.find(track);
+          if (fallback != rotByBone.end()) rotation = &fallback->second;
+        }
+      }
+      if (rotation != nullptr && piece.hasPivot) {
+        mesh = RotateMeshByBoneMatrix(mesh, piece.pivot, *rotation);
       }
       drew |= drawOne(mesh, scaledAnchor(local), g_petAtlas, atlases.pet,
                       1.0F, 1.0F, 1.0F, 1.0F);

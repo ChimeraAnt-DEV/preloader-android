@@ -15,6 +15,7 @@
 #include <nlohmann/json.hpp>
 
 #include <cmath>
+#include <cctype>
 #include <numbers>
 #include <string>
 
@@ -260,6 +261,56 @@ bool BedrockGeometryParser::isSupportedFormat(const std::string &formatVersion) 
   return false;
 }
 
+SkeletonSlot SlotForIdentifier(std::string_view identifier) {
+  if (identifier.empty()) return SkeletonSlot::None;
+  std::string lower;
+  lower.reserve(identifier.size());
+  for (char c : identifier) {
+    lower.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+  }
+  // A pet rides the player root; a hat/cape is worn on a player bone. The check is on the id, not
+  // the bones: an authored export's bone names are arbitrary ("cat", "halo", "dragon"), so keying
+  // off them would classify a pet with a "head" bone as a hat.
+  if (lower.find("pet") != std::string::npos) return SkeletonSlot::B;
+  if (lower.find("hat") != std::string::npos || lower.find("cape") != std::string::npos ||
+      lower.find("acc") != std::string::npos) {
+    return SkeletonSlot::A;
+  }
+  return SkeletonSlot::None;
+}
+
+std::string PlayerBoneFor(SkeletonSlot slot, std::string_view authoredBone) {
+  if (slot == SkeletonSlot::None) return {};
+
+  std::string lower;
+  lower.reserve(authoredBone.size());
+  for (char c : authoredBone) {
+    lower.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+  }
+
+  // Head-named bones (a hat's crown, a pet's head) follow the player head in both slots, so a hat
+  // turns with the look and a pet's head turns with the pet's own head pose.
+  if (lower == "head" || lower.rfind("head", 0) == 0) return SkeletonBone::kHead;
+
+  // A pet's limbs/tail/wings ride the body, grounded against the player legs where the name says so.
+  if (lower.rfind("leg", 0) == 0) return SkeletonBone::kLegs;
+
+  // Everything else (body, root, tail, wing, and an unnamed bone) rides the player body/root. This
+  // is the total fallback: no authored bone is ever left without a skeleton bone, which is what
+  // prevents the null bone-matrix lookup during the animation tick.
+  return SkeletonBone::kBody;
+}
+
+std::string FrameBoneForSkeleton(std::string_view skeletonBone) {
+  // A head follows the head-look track; a leg follows the first leg track (an authored model rarely
+  // distinguishes left/right, and a single track keeps the gait readable). A body/root has no
+  // per-bone track — it is carried by the anchor — so the renderer leaves it unrotated rather than
+  // inventing one.
+  if (skeletonBone == SkeletonBone::kHead) return "head";
+  if (skeletonBone == SkeletonBone::kLegs) return "leg_a";
+  return {};
+}
+
 bool BedrockGeometryParser::parse(const std::string &jsonText, BedrockGeometry &out,
                                   std::string *error) {
   auto fail = [&](const char *reason) {
@@ -381,12 +432,18 @@ std::vector<Mesh> GeometryMeshBuilder::build(const BedrockGeometry &geometry) {
     names.push_back(bone.name);
   }
 
+  // The model's skeleton slot, from its identifier. Resolved once per model: every mesh below gets
+  // a real player-skeleton bone from it, so the animation tick cannot look up a null bone matrix.
+  const SkeletonSlot slot = SlotForIdentifier(model.description.identifier);
+
   for (const Bone &bone : model.bones) {
     if (bone.cubes.empty()) continue;
     const std::vector<Transform> chain = transformChain(bone, byName, names);
 
     Mesh mesh;
     mesh.bone = bone.name;
+    mesh.slot = slot;
+    mesh.skeletonBone = PlayerBoneFor(slot, bone.name);
 
     for (const Cube &cube : bone.cubes) {
       const float inflate = cube.inflate;

@@ -121,6 +121,75 @@ struct ModelDescription {
   int textureHeight = 64;
 };
 
+/**
+ * @brief The player-skeleton attachment slot an authored model resolves to.
+ *
+ * <p>A cosmetic model is authored in its own space and has to be hung off the player skeleton before
+ * it can be animated. There are two slots, distinguished by what the model attaches to:
+ *
+ * <ul>
+ *   <li>{@code A} — a model worn <em>on a player bone</em>: a hat (head) or a cape (back).</li>
+ *   <li>{@code B} — a model that rides the <em>player root</em>: a pet, grounded at the player's
+ *       feet and carried by the body.</li>
+ * </ul>
+ *
+ * <p>The slot is derived from the model's {@code identifier} ({@link SlotForIdentifier}), never from
+ * its bone names, because an authored export names its bones whatever the author typed. Resolving the
+ * slot first is what makes the bone mapping total: every mesh with a slot gets a real player-skeleton
+ * bone ({@link PlayerBoneFor}), so the animation tick can never look up a null bone matrix.
+ */
+enum class SkeletonSlot {
+  None = 0, ///< Not a cosmetic attachment (unknown identifier); no skeleton bone is claimed.
+  A = 1,    ///< Worn on a player bone (hat -> head, cape -> back/body).
+  B = 2,    ///< Rides the player root (pet).
+};
+
+/** @brief The player-skeleton bones a cosmetic can attach to. */
+namespace SkeletonBone {
+/** The player's head; a hat and a pet's head both hang here. */
+inline constexpr const char *kHead = "head";
+/** The player's body/root; a cape and a pet's body both hang here. */
+inline constexpr const char *kBody = "body";
+/** The player's legs; a pet's legs are grounded against them. */
+inline constexpr const char *kLegs = "legs";
+} // namespace SkeletonBone
+
+/**
+ * @brief Maps a geometry identifier to its skeleton slot.
+ *
+ * <p>Pure and case-insensitive so an authored id in any case still resolves: a pet id (which
+ * contains "pet") is slot {@code B}; a hat/accessory or cape id is slot {@code A}; anything else is
+ * {@code None}. A `None` slot is not an error — the caller simply does not attach the model to the
+ * skeleton (it renders where its own bones place it).
+ */
+[[nodiscard]] SkeletonSlot SlotForIdentifier(std::string_view identifier);
+
+/**
+ * @brief Maps an authored bone name to the player-skeleton bone it should follow.
+ *
+ * <p>Total for a non-{@code None} slot: every authored bone resolves to one of the
+ * {@link SkeletonBone} names, so the animation tick never sees an unresolved bone. This is the
+ * mapping that used to be missing — an authored pet's `leg_a` had no counterpart, the per-bone
+ * rotation lookup found nothing, and the mesh was left to animate against a null bone.
+ *
+ * @param slot the model's skeleton slot ({@code None} returns an empty string)
+ * @param authoredBone the bone name as authored in the `.geo.json`
+ * @return the player-skeleton bone name, or "" when the slot is {@code None}
+ */
+[[nodiscard]] std::string PlayerBoneFor(SkeletonSlot slot, std::string_view authoredBone);
+
+/**
+ * @brief Maps a player-skeleton bone to the canonical animation-track name the launcher publishes.
+ *
+ * <p>The frame's per-bone rotation tracks are named for the player-skeleton vocabulary
+ * ({@code head}, {@code leg_a}, …), while an authored model's own bone names are arbitrary. The
+ * renderer looks up a mesh's authored bone first and falls back to this mapping, so a mesh whose
+ * authored name has no track still resolves a real rotation instead of being left to animate against
+ * nothing. An empty return means "no per-bone track": the mesh follows its anchor only (the correct
+ * behaviour for a body/root bone).
+ */
+[[nodiscard]] std::string FrameBoneForSkeleton(std::string_view skeletonBone);
+
 /** @brief One geometry: a description plus a bone hierarchy. */
 struct GeometryModel {
   ModelDescription description;
@@ -145,9 +214,18 @@ struct Vertex {
  *
  * Corners are already transformed into model space (bone rotation, then each ancestor's), so a
  * caller can attach the mesh to a live bone matrix without re-walking the hierarchy per frame.
+ *
+ * {@code skeletonBone} is the player-skeleton bone this mesh should follow, resolved from the
+ * model's identifier slot via {@link SlotForIdentifier} / {@link PlayerBoneFor}. It is empty only
+ * for a model with no cosmetic slot; a model with a slot always carries a real bone, so an animation
+ * tick can never look up a null bone matrix.
  */
 struct Mesh {
   std::string bone;
+  /** The player-skeleton bone this mesh attaches to ("head"/"body"/"legs"), or empty when unattached. */
+  std::string skeletonBone;
+  /** The model's attachment slot, recorded so a caller need not re-derive it. */
+  SkeletonSlot slot = SkeletonSlot::None;
   std::vector<Vertex> vertices;
   std::vector<std::uint32_t> indices;
 };
