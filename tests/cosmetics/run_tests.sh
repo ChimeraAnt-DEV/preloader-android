@@ -15,6 +15,20 @@ if [[ -z "$nlohmann" ]]; then
   nlohmann="$(find "$root/../../../.cxx" -path '*nlohmann_json-src/single_include' -type d 2>/dev/null | head -1 || true)"
 fi
 if [[ -z "$nlohmann" || ! -f "$nlohmann/nlohmann/json.hpp" ]]; then
+  # Fetch the single-header release into a gitignored cache so the host tests do not depend on a
+  # previous native Gradle build. Header-only and pinned by tag, so the run is reproducible.
+  nlohmann="$root/../../../../build/host-tools/nlohmann/include"
+  if [[ ! -f "$nlohmann/nlohmann/json.hpp" ]]; then
+    mkdir -p "$nlohmann/nlohmann"
+    echo "Fetching nlohmann/json single header..." >&2
+    if ! curl -fsSL -o "$nlohmann/nlohmann/json.hpp" \
+        "https://raw.githubusercontent.com/nlohmann/json/v3.11.3/single_include/nlohmann/json.hpp"; then
+      echo "nlohmann/json not found; set NLOHMANN_JSON_INCLUDE to its include dir" >&2
+      exit 1
+    fi
+  fi
+fi
+if [[ -z "$nlohmann" || ! -f "$nlohmann/nlohmann/json.hpp" ]]; then
   echo "nlohmann/json not found; set NLOHMANN_JSON_INCLUDE to its include dir" >&2
   exit 1
 fi
@@ -72,5 +86,15 @@ compile_run SnapshotChannelTest \
 compile_run CosmeticParticlesTest \
   "$root/src/pl/cosmetics/CosmeticParticles.cpp" \
   "$here/CosmeticParticlesTest.cpp"
+
+compile_run GameHookRuleMergeTest \
+  "$here/GameHookRuleMergeTest.cpp"
+
+compile_run CosmeticDrawGateTest \
+  "$here/CosmeticDrawGateTest.cpp"
+
+compile_run ModuleMapTest \
+  "$root/src/pl/runtime/ModuleMap.cpp" \
+  "$here/ModuleMapTest.cpp"
 
 echo "all cosmetics host tests passed"

@@ -10,6 +10,7 @@
 
 #include "pl/Logger.hpp"
 #include "pl/Render.hpp"
+#include "pl/cosmetics/CosmeticDrawGate.hpp"
 #include "pl/cosmetics/NativeCosmeticContext.hpp"
 #include "pl/cosmetics/NativeCosmeticRenderer.hpp"
 #include "pl/hooks/DobbyHookManager.hpp"
@@ -40,6 +41,12 @@ std::atomic_bool g_callbackLive{false};
 
 std::atomic<std::uint32_t> g_cosmeticFrameTick{0};
 std::atomic<std::uint64_t> g_lastDrawnFrameVersion{0};
+// The decision the last render call made, for the diagnostics report (0 = Draw).
+std::atomic<int> g_lastDrawDecision{0};
+// Whether the anchor for the last frame came from the engine's view-projection (true) or the
+// first-person fallback (false). A device pass/fail test must be able to tell these apart.
+std::atomic_bool g_lastAnchorFromEngine{false};
+std::atomic_bool g_anchorKnown{false};
 
 std::atomic<BoneMatrixSource *> g_boneSource{nullptr};
 
@@ -60,7 +67,11 @@ void SetCosmeticWorld(const Mat4 &world) {
 
 Mat4 GetCosmeticWorld() {
   // 1. An explicit override wins (a mod that resolved its own camera).
-  if (g_hasCosmeticWorld.load(std::memory_order_acquire)) return g_cosmeticWorld;
+  if (g_hasCosmeticWorld.load(std::memory_order_acquire)) {
+    g_lastAnchorFromEngine.store(true, std::memory_order_relaxed);
+    g_anchorKnown.store(true, std::memory_order_relaxed);
+    return g_cosmeticWorld;
+  }
 
   // The player's world position is where the cosmetics are anchored. Without it there is nowhere
   // sensible to draw, so bail to a plain translation (still better than the origin).
@@ -74,6 +85,8 @@ Mat4 GetCosmeticWorld() {
   //    correct anchor: it places the cosmetics under the game's own projection and view.
   const pl::render::CameraSource::Frame camera = pl::render::CameraSource::ReadFrame();
   if (camera.hasViewProjection) {
+    g_lastAnchorFromEngine.store(true, std::memory_order_relaxed);
+    g_anchorKnown.store(true, std::memory_order_relaxed);
     return Mat4::multiply(camera.viewProjection, toPlayer);
   }
 
@@ -88,12 +101,18 @@ Mat4 GetCosmeticWorld() {
     constexpr float kAspect = 16.0F / 9.0F;
     Mat4 viewProj;
     if (pl::render::ComputeViewProjection(kFov, kAspect, 0.05F, 512.0F, viewProj)) {
+      // The engine camera did not resolve; the anchor is the first-person fallback. Recorded so a
+      // device pass/fail test cannot silently accept the fallback as if it were the engine camera.
+      g_lastAnchorFromEngine.store(false, std::memory_order_relaxed);
+      g_anchorKnown.store(true, std::memory_order_relaxed);
       return Mat4::multiply(viewProj, toPlayer);
     }
   }
 
   // 4. Last resort: a plain translation to the player position (no view/projection). The renderer
   //    still draws, but placement is approximate.
+  g_lastAnchorFromEngine.store(false, std::memory_order_relaxed);
+  g_anchorKnown.store(true, std::memory_order_relaxed);
   return toPlayer;
 }
 
@@ -116,27 +135,36 @@ void DrawCosmeticsCallback() {
   // its invocation is the honest "the render seam is live" signal — independent of whether anything
   // is equipped this frame.
   g_callbackLive.store(true, std::memory_order_relaxed);
-  const pl::runtime::CosmeticFrameHeader cosmetic = pl::runtime::ReadCosmeticFrameHeader();
-  if (!cosmetic.valid || (cosmetic.flags & 0xFu) == 0) return;
-  g_cosmeticFrameTick.fetch_add(1, std::memory_order_relaxed);
 
-  // Lock-free snapshot of the double-buffered frame, with the published version. The callback is
-  // already invoked once per frame by the single render hook, so the version guard is only a cheap
-  // idempotence check against a duplicate dispatch.
+  // The debug cube must be drawable even with nothing equipped, so its gate is checked before the
+  // "nothing equipped" and "no geometry" checks. The gate is pure and host-tested
+  // (CosmeticDrawGate.hpp) because getting it wrong is invisible on a build machine.
+  const bool debugCubeArmed = IsDebugCubeEnabled();
+
+  const pl::runtime::CosmeticFrameHeader cosmetic = pl::runtime::ReadCosmeticFrameHeader();
+
+  // Snapshot the registry frame. Java publishes at most once per game tick while the renderer runs
+  // every frame, so the latest snapshot is drawn on EVERY render call; the version is recorded for
+  // the diagnostics only and must never gate the draw (that gate was the flicker bug).
   std::vector<std::uint8_t> frameBytes;
   std::uint64_t version = 0;
-  if (!pl::runtime::CosmeticFrameSnapshot(frameBytes, version)) return;
-  if (version == g_lastDrawnFrameVersion.load(std::memory_order_relaxed)) return;
-  g_lastDrawnFrameVersion.store(version, std::memory_order_relaxed);
+  const bool hasFrame = pl::runtime::CosmeticFrameSnapshot(frameBytes, version);
 
-  // Scope to a live local player: if the game has not produced a local-player snapshot (not in a
-  // world / loading screen), there is nobody to wear the cosmetics, so draw nothing.
   float probe[3] = {0.0F, 0.0F, 0.0F};
-  if (!pl::runtime::ReadLocalPlayerPosition(probe)) return;
+  const bool localPlayerLive = pl::runtime::ReadLocalPlayerPosition(probe);
 
   std::vector<std::uint8_t> geometry;
   pl::runtime::RenderGeometryData(geometry);
-  if (geometry.empty()) return;
+
+  const DrawDecision decision = DecideCosmeticDraw(
+      cosmetic.valid && hasFrame, cosmetic.flags, debugCubeArmed, localPlayerLive,
+      geometry.size());
+  g_lastDrawDecision.store(static_cast<int>(decision), std::memory_order_relaxed);
+  if (decision != DrawDecision::Draw) {
+    return;
+  }
+  g_cosmeticFrameTick.fetch_add(1, std::memory_order_relaxed);
+  g_lastDrawnFrameVersion.store(version, std::memory_order_relaxed);
 
   // Copy each piece's atlas out of the registry under the lock. The old code handed out a pointer
   // into the registry and used it after the lock was released, so a concurrent override change could
@@ -186,6 +214,13 @@ RenderStats ReadRenderStats() {
 }
 
 bool IsNativeCosmeticRenderHookLive() { return g_callbackLive.load(std::memory_order_relaxed); }
+
+int LastCosmeticDrawDecision() { return g_lastDrawDecision.load(std::memory_order_relaxed); }
+
+bool LastCameraAnchorFromEngine() {
+  return g_anchorKnown.load(std::memory_order_relaxed)
+      && g_lastAnchorFromEngine.load(std::memory_order_relaxed);
+}
 
 bool BuildCosmeticMatrix(std::string_view bone, const Mat4 &cosmeticOffset, Mat4 &out) {
   BoneMatrixSource *source = g_boneSource.load(std::memory_order_relaxed);

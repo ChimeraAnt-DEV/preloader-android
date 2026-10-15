@@ -1,6 +1,7 @@
 #include "pl/runtime/GameHookRules.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cstdint>
 #include <fstream>
@@ -14,6 +15,7 @@
 #include <nlohmann/json.hpp>
 
 #include "pl/Logger.hpp"
+#include "pl/runtime/GameHookRuleMerge.hpp"
 #include "pl/runtime/VersionCompare.hpp"
 
 namespace pl::runtime {
@@ -22,6 +24,15 @@ namespace {
 std::mutex g_rulesMutex;
 std::string g_rulesPath;
 std::string g_minecraftVersion;
+
+// Diagnostics state for the in-app report. Written once per rules load (on the frame-pump thread),
+// read from the UI thread; plain atomics hold a small numeric summary and a guarded string copy.
+std::atomic<int> g_lastMergeConflictCount{0};
+std::atomic<bool> g_lastRuleHadRenderIndex{false};
+std::atomic<std::uint64_t> g_lastRulesRevision{0};
+std::atomic<bool> g_rulesLoadAttempted{false};
+std::mutex g_lastRuleSummaryMutex;
+std::string g_lastRuleSummary;
 
 std::string Trim(std::string value) {
   auto isNotSpace = [](unsigned char ch) { return !std::isspace(ch); };
@@ -85,24 +96,6 @@ std::optional<std::size_t> ReadSizeField(const nlohmann::json &object,
 
 
 
-bool RuleMatchesVersion(const nlohmann::json &rule,
-                        const std::string &minecraftVersion) {
-  const std::string minVersion = ReadStringField(rule, "min").value_or("");
-  const std::string maxVersion = ReadStringField(rule, "max").value_or("");
-
-  if (minecraftVersion.empty()) {
-    return minVersion.empty() && maxVersion.empty();
-  }
-
-  if (!minVersion.empty() && CompareVersions(minecraftVersion, minVersion) < 0) {
-    return false;
-  }
-  if (!maxVersion.empty() && CompareVersions(minecraftVersion, maxVersion) > 0) {
-    return false;
-  }
-  return true;
-}
-
 std::optional<GameHookSignatures> ParseHookSignatures(const nlohmann::json &rule) {
   const nlohmann::json *sigs = &rule;
   auto sigsIt = rule.find("sigs");
@@ -153,6 +146,8 @@ std::optional<GameHookSignatures> LoadConfiguredGameHookSignatures() {
     minecraftVersion = g_minecraftVersion;
   }
 
+  g_rulesLoadAttempted.store(true, std::memory_order_release);
+
   auto content = ReadTextFile(rulesPath);
   if (!content) {
     preloaderLogger.warn("Preloader runtime data is unavailable: {}",
@@ -166,30 +161,74 @@ std::optional<GameHookSignatures> LoadConfiguredGameHookSignatures() {
     return std::nullopt;
   }
 
+  // Record the revision the file declares, for the diagnostics report.
+  if (root.contains("revision") && root["revision"].is_number_unsigned()) {
+    g_lastRulesRevision.store(root["revision"].get<std::uint64_t>(),
+                              std::memory_order_relaxed);
+  }
+
   auto rulesIt = root.find("rules");
   if (rulesIt == root.end() || !rulesIt->is_array()) {
     preloaderLogger.warn("Preloader runtime data missing rules array");
     return std::nullopt;
   }
 
+  // Merge every rule that matches the running version, so a field a matching-but-first rule omits
+  // (which is how 1.26.33.1 lost its playerRenderVtableIndex) is inherited from another match. The
+  // merge is the pure, host-tested MergeHookRuleForVersion; this function keeps "first match wins
+  // for a field" semantics so the diagnostics report and the hook agree.
+  int matchCount = 0;
   for (const auto &rule : *rulesIt) {
-    if (!rule.is_object() || !RuleMatchesVersion(rule, minecraftVersion)) {
-      continue;
-    }
-
-    auto signatures = ParseHookSignatures(rule);
-    if (signatures) {
-      preloaderLogger.info("Loaded Preloader runtime data for Minecraft {}",
-                            minecraftVersion.empty() ? "<unknown>"
-                                                     : minecraftVersion);
-      return signatures;
+    if (rule.is_object() && RuleMatchesVersion(rule, minecraftVersion)) {
+      ++matchCount;
     }
   }
 
-  preloaderLogger.warn("No valid Preloader runtime data matches Minecraft {}",
-                        minecraftVersion.empty() ? "<unknown>"
-                                                 : minecraftVersion);
-  return std::nullopt;
+  auto merged = MergeHookRuleForVersion(root, minecraftVersion);
+  if (!merged) {
+    preloaderLogger.warn("No valid Preloader runtime data matches Minecraft {}",
+                         minecraftVersion.empty() ? "<unknown>" : minecraftVersion);
+    return std::nullopt;
+  }
+
+  auto signatures = ParseHookSignatures(*merged);
+  if (!signatures) {
+    preloaderLogger.warn("Merged Preloader runtime data is incomplete for Minecraft {}",
+                         minecraftVersion.empty() ? "<unknown>" : minecraftVersion);
+    return std::nullopt;
+  }
+
+  // Diagnostics: how many rules matched (a count > 1 is where first-match selection used to drop
+  // fields) and whether the effective rule carries a render slot.
+  g_lastMergeConflictCount.store(matchCount > 1 ? matchCount - 1 : 0,
+                                 std::memory_order_relaxed);
+  g_lastRuleHadRenderIndex.store(signatures->playerRenderVtableIndex.has_value(),
+                                 std::memory_order_relaxed);
+  {
+    std::lock_guard<std::mutex> lock(g_lastRuleSummaryMutex);
+    std::string summary;
+    auto append = [&summary](const std::string &token) {
+      if (token.empty()) return;
+      if (!summary.empty()) summary += ',';
+      summary += token;
+    };
+    if (!signatures->pauseMenuDtor.empty()) append("pauseMenuDtorSig");
+    if (!signatures->pauseMenuOpen.empty()) append("pauseMenuOpenSig");
+    if (!signatures->hudScreenDtor.empty()) append("hudScreenDtorSig");
+    if (!signatures->hudScreenOpen.empty()) append("hudScreenOpenSig");
+    if (signatures->isShowingMenuVtableIndex) {
+      append("isShowingMenuVtableIndex=" + std::to_string(*signatures->isShowingMenuVtableIndex));
+    }
+    if (signatures->playerRenderVtableIndex) {
+      append("playerRenderVtableIndex=" + std::to_string(*signatures->playerRenderVtableIndex));
+    }
+    if (!signatures->imageLoaderSig.empty()) append("imageLoaderSig");
+    g_lastRuleSummary = summary;
+  }
+
+  preloaderLogger.info("Loaded Preloader runtime data for Minecraft {} ({} matching rule(s))",
+                       minecraftVersion.empty() ? "<unknown>" : minecraftVersion, matchCount);
+  return signatures;
 }
 
 std::size_t ReadConfiguredOptifineSlot(const char *key) {
@@ -242,6 +281,27 @@ bool MatchesConfiguredVersion(const std::string &minVersion,
 bool GameHookRulesConfigured() {
   std::lock_guard<std::mutex> lock(g_rulesMutex);
   return !g_rulesPath.empty();
+}
+
+bool GameHookRulesLoadAttempted() {
+  return g_rulesLoadAttempted.load(std::memory_order_acquire);
+}
+
+std::uint64_t GameHookRulesRevision() {
+  return g_lastRulesRevision.load(std::memory_order_relaxed);
+}
+
+int GameHookRulesMergeConflicts() {
+  return g_lastMergeConflictCount.load(std::memory_order_relaxed);
+}
+
+bool GameHookRulesHaveRenderIndex() {
+  return g_lastRuleHadRenderIndex.load(std::memory_order_relaxed);
+}
+
+std::string GameHookRulesSummary() {
+  std::lock_guard<std::mutex> lock(g_lastRuleSummaryMutex);
+  return g_lastRuleSummary;
 }
 
 } // namespace pl::runtime

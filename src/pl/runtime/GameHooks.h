@@ -31,6 +31,17 @@ bool GameHookInstallResolved();
 bool GameHookInstallPending();
 
 /**
+ * @brief The deferred install's state: 0 not armed, 1 armed and waiting, 2 resolved.
+ *
+ * A single int for the diagnostics report, so "the install never ran" is distinguishable from
+ * "it ran and gave up".
+ */
+int GameHookInstallState();
+
+/** Frame ticks the install gate observed before deciding (diagnostics). */
+int GameHookInstallFrameTicks();
+
+/**
  * @brief Installs immediately, for tests and callers that already know the runtime is up.
  *
  * <p>Idempotent: the install runs at most once per process.
