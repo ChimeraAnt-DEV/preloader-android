@@ -327,10 +327,10 @@ Java_org_chimeramc_client_preloader_PreloaderInput_nativeRequestTextureCacheFlus
 
 JNIEXPORT jintArray JNICALL
 Java_org_chimeramc_client_preloader_PreloaderInput_nativeReadRenderDiagnostics(JNIEnv *env, jclass) {
-  // 16 fields. The first 9 keep their original meaning so an older report reader still works; the
-  // additions (indices 9..15) are the rules/install/camera/library-mapping state the Stage-1/4/5
-  // fixes added. -1 means "unknown / not available".
-  constexpr int kFields = 16;
+  // 17 fields. The first 9 keep their original meaning so an older report reader still works; the
+  // additions (indices 9..16) are the rules/install/camera/library-mapping/triangle state the
+  // Stage-1/4/5/6 fixes added. -1 means "unknown / not available".
+  constexpr int kFields = 17;
   jint values[kFields];
   for (int i = 0; i < kFields; ++i) values[i] = -1;
 
@@ -380,6 +380,9 @@ Java_org_chimeramc_client_preloader_PreloaderInput_nativeReadRenderDiagnostics(J
   // registry, so Java would publish to one and the hook would draw from another — the count is the
   // cheapest proof there is only one.
   values[15] = pl::runtime::CountModuleMappings("libpreloader.so");
+
+  // Triangles submitted this session (Stage 6), so a device can say "drew N triangles".
+  values[16] = static_cast<jint>(pl::cosmetics::NativeCosmeticRenderer::triangleCount());
 
   jintArray out = env->NewIntArray(kFields);
   if (out == nullptr) return nullptr;
