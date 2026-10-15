@@ -238,6 +238,9 @@ public:
    * "a mesh was drawn" — the status line must not claim a draw on the hook alone.
    */
   static std::uint32_t drawCount();
+
+  /** Triangles submitted since the renderer started, for the diagnostics "drew N triangles" line. */
+  static std::uint32_t triangleCount();
 };
 
 } // namespace pl::cosmetics

@@ -282,6 +282,13 @@ bool GameHookInstallPending() {
       && !g_installResolved.load(std::memory_order_acquire);
 }
 
+int GameHookInstallState() {
+  if (!g_installArmed.load(std::memory_order_acquire)) return 0;
+  return g_installResolved.load(std::memory_order_acquire) ? 2 : 1;
+}
+
+int GameHookInstallFrameTicks() { return g_installGate.frameTicks(); }
+
 bool IsPauseMenuOpen() {
   return g_isPauseMenuOpen.load(std::memory_order_relaxed);
 }

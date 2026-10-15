@@ -2,10 +2,12 @@
 
 #include <filesystem>
 #include <optional>
+#include <string>
 
 #include "pl/Logger.hpp"
 #include "pl/internal/ModManager.h"
 #include "pl/runtime/GameHooks.h"
+#include "pl/runtime/GameHookRules.h"
 #include "pl/runtime/JavaRuntime.h"
 #include "pl/runtime/ModMenuBridge.h"
 
@@ -102,6 +104,27 @@ Java_org_chimeramc_client_core_mods_ModManager_nativeIsGameHookInstallPending(
   (void)env;
   (void)clazz;
   return pl::runtime::GameHookInstallPending() ? JNI_TRUE : JNI_FALSE;
+}
+
+// The deferred-install state for the diagnostics report: 0 not armed, 1 armed/waiting, 2 resolved,
+// packed with the frame ticks the gate observed so "gave up" is distinguishable from "installed".
+JNIEXPORT jintArray JNICALL
+Java_org_chimeramc_client_core_mods_ModManager_nativeGameHookInstallState(JNIEnv *env, jclass) {
+  jint values[2];
+  values[0] = pl::runtime::GameHookInstallState();
+  values[1] = pl::runtime::GameHookInstallFrameTicks();
+  jintArray out = env->NewIntArray(2);
+  if (out == nullptr) return nullptr;
+  env->SetIntArrayRegion(out, 0, 2, values);
+  return out;
+}
+
+// The effective hook rule's resolved fields, for the diagnostics report (which rule and slots the
+// running build actually used).
+JNIEXPORT jstring JNICALL
+Java_org_chimeramc_client_core_mods_ModManager_nativeGameHookRulesSummary(JNIEnv *env, jclass) {
+  const std::string summary = pl::runtime::GameHookRulesSummary();
+  return env->NewStringUTF(summary.c_str());
 }
 
 JNIEXPORT void JNICALL

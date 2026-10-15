@@ -531,6 +531,9 @@ geometry::Mesh RotateMeshByBoneMatrix(const geometry::Mesh &mesh, const Vec3 &pi
 static std::atomic<bool> g_initAttempted{false};
 static std::atomic<bool> g_initOk{false};
 static std::atomic<std::uint32_t> g_drawCount{0};
+// Triangles submitted since the last reset, for the diagnostics "drew N triangles" line. The
+// renderer knows exactly how many indices it submitted, so this is a real count, not an estimate.
+static std::atomic<std::uint32_t> g_triangleCount{0};
 
 // One Bedrock model pixel is 1/16 block. Without this the geometry is drawn in raw model pixels —
 // 16x too large. Applied to every piece's anchor so the meshes sit at the player's real scale.
@@ -538,6 +541,10 @@ constexpr float kModelPixelToBlocks = 1.0F / 16.0F;
 
 std::uint32_t NativeCosmeticRenderer::drawCount() {
   return g_drawCount.load(std::memory_order_relaxed);
+}
+
+std::uint32_t NativeCosmeticRenderer::triangleCount() {
+  return g_triangleCount.load(std::memory_order_relaxed);
 }
 
 bool NativeCosmeticRenderer::init() {
@@ -758,6 +765,8 @@ CosmeticDrawResult NativeCosmeticRenderer::drawFrame(std::span<const std::uint8_
 
     drawElements(kTriangles, static_cast<GLsizei>(mesh.indices.size()), kUnsignedInt, nullptr);
     g_drawCount.fetch_add(1, std::memory_order_relaxed);
+    g_triangleCount.fetch_add(static_cast<std::uint32_t>(mesh.indices.size() / 3),
+                              std::memory_order_relaxed);
     return true;
   };
 

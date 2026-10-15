@@ -49,6 +49,7 @@ set(PRELOADER_SOURCES
         src/pl/runtime/mce_image_hook.cpp
         src/pl/runtime/GameLocalPlayer.cpp
         src/pl/runtime/GamePlayerRender.cpp
+        src/pl/runtime/ModuleMap.cpp
         src/pl/runtime/GameResourcePackReload.cpp
         src/pl/runtime/OptifineConfig.cpp
         src/pl/runtime/OptifineMode.cpp

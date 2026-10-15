@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <string>
 
@@ -63,5 +64,30 @@ bool MatchesConfiguredVersion(const std::string &minVersion,
  * when this returns false and the session launches vanilla instead.
  */
 bool GameHookRulesConfigured();
+
+/**
+ * @brief Diagnostics: whether the rules have been loaded at least once this session.
+ *
+ * Distinguishes "did not hook because the rules were never delivered" from "loaded but nothing
+ * resolved" in the report.
+ */
+bool GameHookRulesLoadAttempted();
+
+/** Diagnostics: the revision the loaded rules file declared (0 when unreadable). */
+std::uint64_t GameHookRulesRevision();
+
+/**
+ * @brief Diagnostics: how many extra rules matched the running version.
+ *
+ * A value > 0 means multiple rules covered the build, which is exactly the case where first-match
+ * selection used to drop a field. The merge now inherits the missing field instead.
+ */
+int GameHookRulesMergeConflicts();
+
+/** Diagnostics: whether the effective merged rule carries a {@code playerRenderVtableIndex}. */
+bool GameHookRulesHaveRenderIndex();
+
+/** Diagnostics: a comma-separated list of the effective rule's resolved fields. */
+std::string GameHookRulesSummary();
 
 } // namespace pl::runtime

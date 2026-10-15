@@ -7,7 +7,10 @@
 #include "pl/cosmetics/NativeCosmeticRenderer.hpp"
 #include "pl/cosmetics/NativeRenderHook.hpp"
 #include "pl/runtime/GameCosmetics.h"
+#include "pl/runtime/GameHookRules.h"
+#include "pl/runtime/GameLocalPlayer.h"
 #include "pl/runtime/GamePlayerRender.h"
+#include "pl/runtime/ModuleMap.hpp"
 #include "pl/runtime/mce_image_hook.hpp"
 
 // The JNI surface for the native cosmetics registry. Java fills the cape/texture overrides and the
@@ -29,6 +32,13 @@ std::vector<std::uint8_t> CopyBytes(JNIEnv *env, jbyteArray array, std::size_t e
     env->GetByteArrayRegion(array, 0, usable, reinterpret_cast<jbyte *>(out.data()));
   }
   return out;
+}
+
+/** The raw IEEE-754 bits of a float, so a float can travel inside an int[] across JNI. */
+std::uint32_t FloatBits(float value) {
+  std::uint32_t bits = 0;
+  std::memcpy(&bits, &value, sizeof(bits));
+  return bits;
 }
 
 } // namespace
@@ -317,8 +327,12 @@ Java_org_chimeramc_client_preloader_PreloaderInput_nativeRequestTextureCacheFlus
 
 JNIEXPORT jintArray JNICALL
 Java_org_chimeramc_client_preloader_PreloaderInput_nativeReadRenderDiagnostics(JNIEnv *env, jclass) {
-  jint values[9];
-  for (int i = 0; i < 9; ++i) values[i] = -1;
+  // 17 fields. The first 9 keep their original meaning so an older report reader still works; the
+  // additions (indices 9..16) are the rules/install/camera/library-mapping/triangle state the
+  // Stage-1/4/5/6 fixes added. -1 means "unknown / not available".
+  constexpr int kFields = 17;
+  jint values[kFields];
+  for (int i = 0; i < kFields; ++i) values[i] = -1;
 
   // Slot used and how it was resolved.
   std::size_t slot = 0;
@@ -347,11 +361,66 @@ Java_org_chimeramc_client_preloader_PreloaderInput_nativeReadRenderDiagnostics(J
 
   values[8] = pl::runtime::PieceAtlasMask();
 
-  jintArray out = env->NewIntArray(9);
+  // --- Stage 1.3 / 1.2 / 1.4 / 5 diagnostics -------------------------------------------------
+  // The last cosmetic draw decision (0 = draw; the enum names the gate that skipped).
+  values[9] = pl::cosmetics::LastCosmeticDrawDecision();
+
+  // Whether the local-player feed produced a position this frame (the cosmetics' local scope).
+  float probePosition[3] = {0.0F, 0.0F, 0.0F};
+  values[10] = pl::runtime::ReadLocalPlayerPosition(probePosition) ? 1 : 0;
+
+  // The rules revision, how many extra rules matched, and whether the effective rule carries the
+  // render slot. These are the fields whose loss silently disabled the hook.
+  values[11] = static_cast<jint>(pl::runtime::GameHookRulesRevision());
+  values[12] = pl::runtime::GameHookRulesMergeConflicts();
+  values[13] = pl::runtime::GameHookRulesHaveRenderIndex() ? 1 : 0;
+  values[14] = pl::runtime::GameHookRulesLoadAttempted() ? 1 : 0;
+
+  // How many times `libpreloader.so` is mapped into this process. A second copy has its own empty
+  // registry, so Java would publish to one and the hook would draw from another — the count is the
+  // cheapest proof there is only one.
+  values[15] = pl::runtime::CountModuleMappings("libpreloader.so");
+
+  // Triangles submitted this session (Stage 6), so a device can say "drew N triangles".
+  values[16] = static_cast<jint>(pl::cosmetics::NativeCosmeticRenderer::triangleCount());
+
+  jintArray out = env->NewIntArray(kFields);
   if (out == nullptr) return nullptr;
-  env->SetIntArrayRegion(out, 0, 9, values);
+  env->SetIntArrayRegion(out, 0, kFields, values);
   return out;
 }
+
+// The local-player feed: {live, xBits, yBits, zBits, yawBits, pitchBits}. Floats are returned as
+// their raw int bits so a single int[] crosses JNI; the caller decodes with Float.intBitsToFloat.
+JNIEXPORT jintArray JNICALL
+Java_org_chimeramc_client_preloader_PreloaderInput_nativeReadLocalPlayerFeed(JNIEnv *env, jclass) {
+  float position[3] = {0.0F, 0.0F, 0.0F};
+  float rotation[2] = {0.0F, 0.0F};
+  const bool live = pl::runtime::ReadLocalPlayerPosition(position);
+  pl::runtime::ReadLocalPlayerRotation(rotation);
+
+  jint values[6];
+  values[0] = live ? 1 : 0;
+  auto bits = [](float value) { return static_cast<jint>(FloatBits(value)); };
+  values[1] = bits(position[0]);
+  values[2] = bits(position[1]);
+  values[3] = bits(position[2]);
+  values[4] = bits(rotation[0]);
+  values[5] = bits(rotation[1]);
+
+  jintArray out = env->NewIntArray(6);
+  if (out == nullptr) return nullptr;
+  env->SetIntArrayRegion(out, 0, 6, values);
+  return out;
+}
+
+// The camera anchor source for the last frame: 1 = the engine view-projection resolved, 0 = the
+// first-person fallback was used. A pass/fail device test must never silently accept the fallback.
+JNIEXPORT jint JNICALL
+Java_org_chimeramc_client_preloader_PreloaderInput_nativeCameraAnchorSource(JNIEnv *, jclass) {
+  return pl::cosmetics::LastCameraAnchorFromEngine() ? 1 : 0;
+}
+
 
 JNIEXPORT void JNICALL
 Java_org_chimeramc_client_preloader_PreloaderInput_nativeSetCosmeticDebugCube(JNIEnv *, jclass,
