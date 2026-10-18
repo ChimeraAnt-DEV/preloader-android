@@ -132,9 +132,25 @@ std::optional<GameHookSignatures> ParseHookSignatures(const nlohmann::json &rule
 } // namespace
 
 void ConfigureGameHookRules(std::string rulesPath, std::string minecraftVersion) {
+  // Read the revision here, at delivery time, rather than only inside
+  // LoadConfiguredGameHookSignatures. The install is deferred to the game's frame tick and is
+  // skipped entirely when the runtime never comes up (or when the path is empty), and in that case
+  // the diagnostics report used to print "revision 0" for a file that was in fact delivered and
+  // carried a revision. Recording it from the delivered file makes the report say what was actually
+  // handed over, independently of whether the hooks armed.
+  std::uint64_t deliveredRevision = 0;
+  if (auto content = ReadTextFile(rulesPath)) {
+    nlohmann::json root = nlohmann::json::parse(*content, nullptr, false);
+    if (!root.is_discarded() && root.is_object() && root.contains("revision") &&
+        root["revision"].is_number_unsigned()) {
+      deliveredRevision = root["revision"].get<std::uint64_t>();
+    }
+  }
+
   std::lock_guard<std::mutex> lock(g_rulesMutex);
   g_rulesPath = std::move(rulesPath);
   g_minecraftVersion = std::move(minecraftVersion);
+  g_lastRulesRevision.store(deliveredRevision, std::memory_order_relaxed);
 }
 
 std::optional<GameHookSignatures> LoadConfiguredGameHookSignatures() {
