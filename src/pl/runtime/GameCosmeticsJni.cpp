@@ -485,4 +485,93 @@ Java_org_chimeramc_client_preloader_PreloaderInput_nativeClearCapturedSkin(JNIEn
   pl::runtime::ClearCapturedSkin();
 }
 
+// The cape route. The captured cape is the local player's vanilla cape content; registering a custom
+// cape against it makes the loader substitute the local cape's pixels for the custom ones, which is
+// what makes a cape visible in third person on a Vulkan build (no GL draw is involved).
+JNIEXPORT jbyteArray JNICALL
+Java_org_chimeramc_client_preloader_PreloaderInput_nativeReadCapturedCape(JNIEnv *env, jclass) {
+  constexpr std::size_t kMaxPayload = 1024U * 1024U;
+  std::vector<std::uint8_t> buffer(kMaxPayload, 0);
+  std::uint32_t width = 0;
+  std::uint32_t height = 0;
+  std::uint32_t format = 0;
+  std::int64_t stampMs = 0;
+  std::size_t payloadSize = 0;
+  if (!pl::runtime::CopyCapturedCape(buffer.data(), buffer.size(), &width, &height, &format,
+                                     &stampMs, &payloadSize)
+      || payloadSize == 0 || payloadSize > kMaxPayload) {
+    return nullptr;
+  }
+
+  constexpr std::size_t kHeader = 16;
+  std::vector<std::uint8_t> out(kHeader + payloadSize, 0);
+  auto put32 = [&out](std::size_t offset, std::uint32_t value) {
+    out[offset] = static_cast<std::uint8_t>(value & 0xFF);
+    out[offset + 1] = static_cast<std::uint8_t>((value >> 8) & 0xFF);
+    out[offset + 2] = static_cast<std::uint8_t>((value >> 16) & 0xFF);
+    out[offset + 3] = static_cast<std::uint8_t>((value >> 24) & 0xFF);
+  };
+  put32(0, width);
+  put32(4, height);
+  put32(8, format);
+  put32(12, static_cast<std::uint32_t>(stampMs & 0xFFFFFFFFu));
+  std::memcpy(out.data() + kHeader, buffer.data(), payloadSize);
+
+  jbyteArray result = env->NewByteArray(static_cast<jsize>(out.size()));
+  if (result == nullptr) return nullptr;
+  env->SetByteArrayRegion(result, 0, static_cast<jsize>(out.size()),
+                          reinterpret_cast<const jbyte *>(out.data()));
+  return result;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_org_chimeramc_client_preloader_PreloaderInput_nativeHasCapturedCape(JNIEnv *, jclass) {
+  return pl::runtime::HasCapturedCape() ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT void JNICALL
+Java_org_chimeramc_client_preloader_PreloaderInput_nativeClearCapturedCape(JNIEnv *, jclass) {
+  pl::runtime::ClearCapturedCape();
+}
+
+JNIEXPORT void JNICALL
+Java_org_chimeramc_client_preloader_PreloaderInput_nativeSetCapeSubstitution(
+    JNIEnv *env, jclass, jbyteArray rgba, jint width, jint height) {
+  if (rgba == nullptr || width <= 0 || height <= 0) {
+    pl::runtime::ClearCapeSubstitution();
+    return;
+  }
+  const jsize length = env->GetArrayLength(rgba);
+  const std::size_t expected =
+      static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 4U;
+  if (length <= 0 || static_cast<std::size_t>(length) < expected) return;
+  std::vector<std::uint8_t> pixels(static_cast<std::size_t>(length), 0);
+  env->GetByteArrayRegion(rgba, 0, length, reinterpret_cast<jbyte *>(pixels.data()));
+  pl::runtime::SetCapeSubstitution(pixels.data(), static_cast<std::uint32_t>(width),
+                                   static_cast<std::uint32_t>(height));
+}
+
+JNIEXPORT void JNICALL
+Java_org_chimeramc_client_preloader_PreloaderInput_nativeClearCapeSubstitution(JNIEnv *, jclass) {
+  pl::runtime::ClearCapeSubstitution();
+}
+
+JNIEXPORT jint JNICALL
+Java_org_chimeramc_client_preloader_PreloaderInput_nativeCapeSubstitutionCount(JNIEnv *, jclass) {
+  return static_cast<jint>(pl::runtime::CapeSubstitutionCount());
+}
+
+JNIEXPORT jlongArray JNICALL
+Java_org_chimeramc_client_preloader_PreloaderInput_nativeReadCapeCaptureDiagnostics(JNIEnv *env,
+                                                                                    jclass) {
+  std::uint64_t out[4] = {0, 0, 0, 0};
+  pl::runtime::ReadCapeCaptureDiagnostics(out);
+  jlongArray result = env->NewLongArray(4);
+  if (result == nullptr) return nullptr;
+  jlong values[4] = {static_cast<jlong>(out[0]), static_cast<jlong>(out[1]),
+                     static_cast<jlong>(out[2]), static_cast<jlong>(out[3])};
+  env->SetLongArrayRegion(result, 0, 4, values);
+  return result;
+}
+
 } // extern "C"

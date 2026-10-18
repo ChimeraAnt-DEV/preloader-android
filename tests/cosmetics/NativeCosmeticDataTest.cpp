@@ -184,6 +184,80 @@ void testTruncatedGeometryBlobRejected() {
   assert(pieces.empty());
 }
 
+// --- Cape/skin shape recognition -----------------------------------------------------------
+
+// A minimal PNG header for a given IHDR size; the pixel data is irrelevant to the shape rule.
+std::vector<std::uint8_t> pngHeader(std::uint32_t width, std::uint32_t height) {
+  std::vector<std::uint8_t> p = {0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a};
+  p.push_back(0x00); p.push_back(0x00); p.push_back(0x00); p.push_back(0x0d);  // IHDR length
+  p.push_back('I'); p.push_back('H'); p.push_back('D'); p.push_back('R');
+  auto be32 = [&p](std::uint32_t v) {
+    p.push_back((v >> 24) & 0xFF);
+    p.push_back((v >> 16) & 0xFF);
+    p.push_back((v >> 8) & 0xFF);
+    p.push_back(v & 0xFF);
+  };
+  be32(width);
+  be32(height);
+  return p;
+}
+
+void testPngDimensionsReadTheHeader() {
+  auto png = pngHeader(64, 32);
+  std::uint32_t w = 0, h = 0;
+  assert(pl::cosmetics::PngDimensions(png.data(), png.size(), &w, &h));
+  assert(w == 64 && h == 32);
+  // A non-PNG is rejected rather than read as a size.
+  std::vector<std::uint8_t> notPng = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+                                      17, 18, 19, 20, 21, 22, 23, 24};
+  assert(!pl::cosmetics::PngDimensions(notPng.data(), notPng.size(), &w, &h));
+  // A truncated header is rejected.
+  assert(!pl::cosmetics::PngDimensions(png.data(), 12, &w, &h));
+}
+
+void testCapeShapeIsTheTwoToOnePanel() {
+  assert(pl::cosmetics::IsCapeShapedSize(64, 32));
+  assert(pl::cosmetics::IsCapeShapedSize(128, 64));
+  // A square skin atlas is not a cape.
+  assert(!pl::cosmetics::IsCapeShapedSize(64, 64));
+  assert(!pl::cosmetics::IsCapeShapedSize(128, 128));
+  // Other ratios are neither.
+  assert(!pl::cosmetics::IsCapeShapedSize(64, 48));
+  assert(!pl::cosmetics::IsCapeShapedSize(0, 0));
+}
+
+void testCapePanelFromPng() {
+  auto png = pngHeader(64, 32);
+  std::uint32_t w = 0, h = 0;
+  assert(pl::cosmetics::CapePanelForPayload(0, png.data(), png.size(), &w, &h));
+  assert(w == 64 && h == 32);
+  // A square skin payload is not a cape, even through the same call.
+  auto square = pngHeader(64, 64);
+  assert(!pl::cosmetics::CapePanelForPayload(0, square.data(), square.size(), &w, &h));
+}
+
+void testCapePanelFromRgba8() {
+  // A 64x32 RGBA8 panel is 64*32*4 bytes.
+  std::vector<std::uint8_t> rgba(64 * 32 * 4, 0x80);
+  std::uint32_t w = 0, h = 0;
+  assert(pl::cosmetics::CapePanelForPayload(4, rgba.data(), rgba.size(), &w, &h));
+  assert(w == 64 && h == 32);
+  // A square RGBA8 buffer is not a cape.
+  std::vector<std::uint8_t> square(64 * 64 * 4, 0x80);
+  assert(!pl::cosmetics::CapePanelForPayload(4, square.data(), square.size(), &w, &h));
+  // A wrong length is rejected.
+  std::vector<std::uint8_t> odd(64 * 32 * 4 - 4, 0x80);
+  assert(!pl::cosmetics::CapePanelForPayload(4, odd.data(), odd.size(), &w, &h));
+}
+
+void testCapePanelRejectsOtherFormatsAndNull() {
+  auto png = pngHeader(64, 32);
+  std::uint32_t w = 0, h = 0;
+  assert(!pl::cosmetics::CapePanelForPayload(7, png.data(), png.size(), &w, &h));
+  assert(!pl::cosmetics::CapePanelForPayload(0, nullptr, 100, &w, &h));
+  assert(!pl::cosmetics::CapePanelForPayload(0, png.data(), 0, &w, &h));
+}
+
 } // namespace
 
 int main() {
@@ -193,5 +267,10 @@ int main() {
   testEmptyFrameRejected();
   testGeometryBlobParsing();
   testTruncatedGeometryBlobRejected();
+  testPngDimensionsReadTheHeader();
+  testCapeShapeIsTheTwoToOnePanel();
+  testCapePanelFromPng();
+  testCapePanelFromRgba8();
+  testCapePanelRejectsOtherFormatsAndNull();
   return 0;
 }

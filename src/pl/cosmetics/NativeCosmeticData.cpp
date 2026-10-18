@@ -176,4 +176,57 @@ std::vector<PieceMesh> ParseGeometryForPieceData(std::span<const std::uint8_t> b
   return out;
 }
 
+// ---------------------------------------------------------------------------------------------
+// Cape/skin shape recognition (pure, host-tested)
+// ---------------------------------------------------------------------------------------------
+
+bool PngDimensions(const std::uint8_t *data, std::size_t size, std::uint32_t *width,
+                   std::uint32_t *height) {
+  if (data == nullptr || width == nullptr || height == nullptr || size < 24U) return false;
+  static const std::uint8_t kPngMagic[8] = {0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a};
+  for (int i = 0; i < 8; ++i) {
+    if (data[i] != kPngMagic[i]) return false;
+  }
+  // The IHDR chunk's width/height are big-endian at offsets 16..19 and 20..23.
+  const std::uint8_t *p = data + 16;
+  *width = (static_cast<std::uint32_t>(p[0]) << 24) |
+           (static_cast<std::uint32_t>(p[1]) << 16) |
+           (static_cast<std::uint32_t>(p[2]) << 8) | static_cast<std::uint32_t>(p[3]);
+  *height = (static_cast<std::uint32_t>(p[4]) << 24) |
+            (static_cast<std::uint32_t>(p[5]) << 16) |
+            (static_cast<std::uint32_t>(p[6]) << 8) | static_cast<std::uint32_t>(p[7]);
+  return true;
+}
+
+bool IsCapeShapedSize(std::uint32_t width, std::uint32_t height) {
+  if (width == 0 || height == 0 || width == height) return false;
+  // A cape is a landscape 2:1 panel; vanilla is 64x32 and a higher-resolution authored cape keeps
+  // the ratio. A square skin atlas is deliberately excluded.
+  return width == 2U * height;
+}
+
+bool CapePanelForPayload(std::uint32_t format, const std::uint8_t *data, std::size_t size,
+                         std::uint32_t *width, std::uint32_t *height) {
+  if (data == nullptr || width == nullptr || height == nullptr || size == 0) return false;
+  if (format == 0U) {  // auto-detect -> PNG
+    std::uint32_t w = 0, h = 0;
+    if (!PngDimensions(data, size, &w, &h)) return false;
+    if (!IsCapeShapedSize(w, h)) return false;
+    *width = w;
+    *height = h;
+    return true;
+  }
+  if (format == 4U) {  // RGBA8: pixels = 2*height^2 for a 2:1 panel
+    if (size % 4U != 0) return false;
+    std::uint32_t pixels = static_cast<std::uint32_t>(size / 4U);
+    std::uint32_t h = 1;
+    while (2U * h * h < pixels && h < 4096U) ++h;
+    if (2U * h * h != pixels) return false;
+    *width = 2U * h;
+    *height = h;
+    return true;
+  }
+  return false;
+}
+
 } // namespace pl::cosmetics

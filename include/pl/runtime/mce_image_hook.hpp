@@ -247,6 +247,68 @@ void ClearCapturedSkin();
 bool HasCapturedSkin();
 
 // ---------------------------------------------------------------------------------------------
+// Cape capture / substitution (the Vulkan-safe cape route)
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * @brief Copies out the most recently captured cape texture, if one is held.
+ *
+ * A cape is the wide 2:1 panel texture the cape geometry samples, and the engine hands the loader
+ * its source bytes exactly as it does the base skin. The loader detour recognises a 2:1 payload and
+ * copies it here, so the launcher can (a) read back the local player's vanilla cape bytes and
+ * (b) register those exact bytes as the key for a custom cape. Like the skin capture this is
+ * **content, not attribution**: the seam carries no player id, so the held panel is the most recent
+ * cape-shaped upload.
+ *
+ * @param out       receives the bytes when a capture is held
+ * @param maxBytes  capacity of @p out
+ * @param width     receives the pixel width
+ * @param height    receives the pixel height
+ * @param format    receives the loader format the bytes arrived as
+ * @param stampMs   receives the monotonic capture time (0 when none)
+ * @param outSize   receives the payload byte length
+ * @return true when a capture was copied; false when none is held or the buffer is too small
+ */
+bool CopyCapturedCape(std::uint8_t *out, std::size_t maxBytes, std::uint32_t *width,
+                      std::uint32_t *height, std::uint32_t *format, std::int64_t *stampMs,
+                      std::size_t *outSize);
+
+/** Discards the held cape capture. */
+void ClearCapturedCape();
+
+/** True while a cape capture is held. */
+bool HasCapturedCape();
+
+/**
+ * @brief Registers the local player's custom cape pixels.
+ *
+ * The substitution is keyed on the *captured* vanilla cape content, so it fires only for the cape
+ * the engine loads for the local player. This is the whole reason it is safe without a player id:
+ * a peer's cape has different bytes and so a different key, and with no capture there is no key at
+ * all and nothing is replaced. Works on a Vulkan build because it replaces the texture the engine
+ * uploads rather than drawing GL geometry.
+ *
+ * @param rgba   the custom cape as top-left-origin RGBA8 (width*height*4 bytes)
+ * @param width  panel width
+ * @param height panel height
+ */
+void SetCapeSubstitution(const std::uint8_t *rgba, std::uint32_t width, std::uint32_t height);
+
+/** Removes the local cape substitution, leaving every other substitution intact. */
+void ClearCapeSubstitution();
+
+/** How many cape-shaped substitutions have fired this session. */
+std::uint32_t CapeSubstitutionCount();
+
+/**
+ * @brief Reads cape capture diagnostics.
+ *
+ * @param out Receives {hasCapture, capturedBytes, capturedWidth | (substitutions << 32),
+ *            capturedHeight}.
+ */
+void ReadCapeCaptureDiagnostics(std::uint64_t out[4]);
+
+// ---------------------------------------------------------------------------------------------
 // The mce::Image pipeline hook
 // ---------------------------------------------------------------------------------------------
 

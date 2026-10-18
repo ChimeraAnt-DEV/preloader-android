@@ -52,4 +52,38 @@ struct PieceMesh {
 PL_EXPORT std::vector<PieceMesh> ParseGeometryForPieceData(std::span<const std::uint8_t> blob,
                                                  std::string_view pieceId);
 
+/**
+ * @brief Reads a PNG's IHDR width/height without decoding the image.
+ *
+ * The image-loader seam hands over raw source bytes with no id, so the only way to recognise a cape
+ * (or a skin) is by its shape, which means reading the IHDR. Only the header is inspected; the
+ * pixel data is never touched. Returns false for anything that is not a PNG with a complete IHDR.
+ */
+PL_EXPORT bool PngDimensions(const std::uint8_t *data, std::size_t size, std::uint32_t *width,
+                             std::uint32_t *height);
+
+/**
+ * @brief True when a width/height pair is a cape panel.
+ *
+ * A cape texture is a landscape 2:1 panel (vanilla is 64x32), so it is recognised by the exact 2:1
+ * ratio rather than by a fixed size: a higher-resolution authored cape is still 2:1, and a square
+ * skin atlas is excluded, which is what keeps the skin capture and the cape capture from colliding
+ * on the one seam that carries both.
+ */
+PL_EXPORT bool IsCapeShapedSize(std::uint32_t width, std::uint32_t height);
+
+/**
+ * @brief The cape panel dimensions for a payload in a given loader format, or false when it is not
+ *        a cape.
+ *
+ * @param format the {@code mce::ImageFormat} value the engine passed (0 = auto/PNG, 4 = RGBA8)
+ * @param data   the source bytes the engine is loading
+ * @param size   the byte length
+ * @param width  receives the panel width on success
+ * @param height receives the panel height on success
+ */
+PL_EXPORT bool CapePanelForPayload(std::uint32_t format, const std::uint8_t *data,
+                                   std::size_t size, std::uint32_t *width,
+                                   std::uint32_t *height);
+
 } // namespace pl::cosmetics

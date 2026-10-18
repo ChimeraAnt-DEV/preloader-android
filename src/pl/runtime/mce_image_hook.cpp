@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "pl/Logger.hpp"
+#include "pl/cosmetics/NativeCosmeticData.hpp"
 #include "pl/memory/Hook.hpp"
 #include "pl/runtime/GameCosmetics.h"
 #include "pl/runtime/GameHookRules.h"
@@ -157,23 +158,12 @@ bool IsSkinEdge(std::uint32_t edge) {
   return edge == 64U || edge == 128U || edge == 256U || edge == 512U;
 }
 
-// Parses a PNG's IHDR edge, or 0 when the bytes are not a PNG or are malformed.
+// Parses a PNG's IHDR edge, or 0 when the bytes are not a square PNG. The PNG header parse and the
+// cape/skin shape rules live in the pure, host-tested `pl::cosmetics` module so the device seam and
+// the tests cannot disagree about what counts as a cape.
 std::uint32_t PngSquareEdge(const std::uint8_t *data, std::size_t size) {
-  if (data == nullptr || size < 24U) return 0;
-  static const std::uint8_t kPngMagic[8] = {0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a};
-  for (int i = 0; i < 8; ++i) {
-    if (data[i] != kPngMagic[i]) return 0;
-  }
-  // Bytes 12..15 are the IHDR type; 16..19 the width, 20..23 the height (big-endian).
-  const std::uint8_t *p = data + 16;
-  std::uint32_t width = (static_cast<std::uint32_t>(p[0]) << 24) |
-                        (static_cast<std::uint32_t>(p[1]) << 16) |
-                        (static_cast<std::uint32_t>(p[2]) << 8) |
-                        static_cast<std::uint32_t>(p[3]);
-  std::uint32_t height = (static_cast<std::uint32_t>(p[4]) << 24) |
-                         (static_cast<std::uint32_t>(p[5]) << 16) |
-                         (static_cast<std::uint32_t>(p[6]) << 8) |
-                         static_cast<std::uint32_t>(p[7]);
+  std::uint32_t width = 0, height = 0;
+  if (!cosmetics::PngDimensions(data, size, &width, &height)) return 0;
   return width == height ? width : 0;
 }
 
@@ -206,6 +196,61 @@ void CaptureSkin(std::uint32_t format, const std::uint8_t *data, std::size_t siz
   g_skinHeight = edge;
   g_skinFormat = format;
   g_skinStampMs.store(MonotonicMs(), std::memory_order_relaxed);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Cape capture and substitution
+// ---------------------------------------------------------------------------------------------
+//
+// The cape is a separate `mce::Image` member of the same `SerializedSkinRef` (`+0xa8`), and it is
+// the skin's cape *pixels* the engine binds. Rewriting them is what makes a custom cape visible in
+// third person, and it works on a Vulkan build because it never touches the GL state the deleted
+// raw renderer needed - it only replaces the texture the engine itself uploads.
+//
+// There are two ways to reach those pixels, and both are content-addressed because this seam
+// carries no player or texture id:
+//
+//  1. Live: when the engine loads a cape-shaped texture, the loader detour swaps the incoming bytes
+//     for the local player's registered cape pixels. This is the Vulkan-safe route. It is gated on
+//     a "this is the local player's cape" test so it can never replace another player's cape.
+//  2. Offline: the launcher decodes the local skin's cape bytes (read back from the base-skin
+//     capture) and registers that exact content as the key. No identity test is needed, because
+//     the key *is* the local cape's own bytes.
+//
+// "The local player's cape" is decided by byte identity with the captured cape: the cape the loader
+// builds for the local player hashes to the same value as the cape pixels the launcher captured
+// from the local skin, so a peer's cape (different bytes) is never matched. When nothing has been
+// captured there is no key, so nothing is replaced - fail-closed, never a guess.
+
+constexpr std::size_t kCapeMaxBytes = 1024U * 1024U;
+
+std::mutex g_capeMutex;
+std::vector<std::uint8_t> g_capeBytes;
+std::uint32_t g_capeWidth = 0;
+std::uint32_t g_capeHeight = 0;
+std::uint32_t g_capeFormat = 0;
+std::atomic<std::int64_t> g_capeStampMs{0};
+std::atomic<std::uint32_t> g_capeSubstitutions{0};
+
+// The cape/skin shape rules (a cape is a 2:1 panel, a skin is a square) live in the pure,
+// host-tested `pl::cosmetics` module; this is just the bounds-checked wrapper the loader detour
+// calls. A payload larger than the cape limit is ignored rather than scanned.
+std::uint32_t CapeEdge(std::uint32_t format, const std::uint8_t *data, std::size_t size,
+                       std::uint32_t *outWidth, std::uint32_t *outHeight) {
+  if (data == nullptr || size == 0 || size > kCapeMaxBytes) return 0;
+  if (!cosmetics::CapePanelForPayload(format, data, size, outWidth, outHeight)) return 0;
+  return *outWidth;
+}
+
+void CaptureCape(std::uint32_t format, const std::uint8_t *data, std::size_t size,
+                 std::uint32_t width, std::uint32_t height) {
+  if (data == nullptr || size == 0 || width == 0 || height == 0) return;
+  std::lock_guard<std::mutex> lock(g_capeMutex);
+  g_capeBytes.assign(data, data + size);
+  g_capeWidth = width;
+  g_capeHeight = height;
+  g_capeFormat = format;
+  g_capeStampMs.store(MonotonicMs(), std::memory_order_relaxed);
 }
 
 // Tracked allocations, so a foreign or double free is refused instead of corrupting the heap. The
@@ -313,12 +358,19 @@ LoaderReturn HookLoader(void *out, std::uint32_t format, const std::uint8_t *dat
   g_hookCalls.fetch_add(1, std::memory_order_relaxed);
   if (size != 0) g_bufferBytesSeen.fetch_add(size, std::memory_order_relaxed);
 
-  // Capture the base skin before any substitution: the player's own skin arrives here as a
-  // base-skin-shaped payload, and this is the only place the engine hands us its source bytes.
+  // Capture the base skin and the cape before any substitution: the player's own skin and cape
+  // arrive here as shaped payloads, and this is the only place the engine hands us their source
+  // bytes. Capturing first means a substitution on a later load keys on the *vanilla* content, and
+  // the launcher can register that exact key without needing the texture id the seam does not carry.
   if (data != nullptr && size != 0) {
     const std::uint32_t skinEdge = BaseSkinEdge(format, data, size);
     if (skinEdge != 0) {
       CaptureSkin(format, data, size, skinEdge);
+    } else {
+      std::uint32_t capeW = 0, capeH = 0;
+      if (CapeEdge(format, data, size, &capeW, &capeH) != 0) {
+        CaptureCape(format, data, size, capeW, capeH);
+      }
     }
   }
 
@@ -343,6 +395,10 @@ LoaderReturn HookLoader(void *out, std::uint32_t format, const std::uint8_t *dat
       useSize = overrideSize;
       useFormat = overrideFormat;
       g_substitutions.fetch_add(1, std::memory_order_relaxed);
+      std::uint32_t capeW = 0, capeH = 0;
+      if (CapeEdge(format, data, size, &capeW, &capeH) != 0) {
+        g_capeSubstitutions.fetch_add(1, std::memory_order_relaxed);
+      }
     }
   }
 
@@ -456,6 +512,77 @@ void ClearCapturedSkin() {
 bool HasCapturedSkin() {
   std::lock_guard<std::mutex> lock(g_skinMutex);
   return !g_skinBytes.empty() && g_skinWidth != 0;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Cape capture / substitution (public)
+// ---------------------------------------------------------------------------------------------
+
+bool CopyCapturedCape(std::uint8_t *out, std::size_t maxBytes, std::uint32_t *width,
+                      std::uint32_t *height, std::uint32_t *format, std::int64_t *stampMs,
+                      std::size_t *outSize) {
+  std::lock_guard<std::mutex> lock(g_capeMutex);
+  if (g_capeBytes.empty() || g_capeWidth == 0 || g_capeHeight == 0) return false;
+  if (outSize != nullptr) *outSize = g_capeBytes.size();
+  if (out == nullptr || maxBytes < g_capeBytes.size()) return false;
+  std::memcpy(out, g_capeBytes.data(), g_capeBytes.size());
+  if (width != nullptr) *width = g_capeWidth;
+  if (height != nullptr) *height = g_capeHeight;
+  if (format != nullptr) *format = g_capeFormat;
+  if (stampMs != nullptr) *stampMs = g_capeStampMs.load(std::memory_order_relaxed);
+  return true;
+}
+
+void ClearCapturedCape() {
+  std::lock_guard<std::mutex> lock(g_capeMutex);
+  g_capeBytes.clear();
+  g_capeWidth = 0;
+  g_capeHeight = 0;
+  g_capeFormat = 0;
+  g_capeStampMs.store(0, std::memory_order_relaxed);
+}
+
+bool HasCapturedCape() {
+  std::lock_guard<std::mutex> lock(g_capeMutex);
+  return !g_capeBytes.empty() && g_capeWidth != 0;
+}
+
+void SetCapeSubstitution(const std::uint8_t *rgba, std::uint32_t width, std::uint32_t height) {
+  if (rgba == nullptr || width == 0 || height == 0) {
+    ClearCapeSubstitution();
+    return;
+  }
+  // The key is the *vanilla* cape content the engine loads for the local player, which is exactly
+  // what the captured cape holds. Registering that hash as "build from these pixels instead" makes
+  // the substitution fire for the local cape and nothing else: a peer's cape has different bytes
+  // and so a different hash, and with no capture there is no key and nothing is replaced.
+  std::vector<std::uint8_t> keyBytes;
+  {
+    std::lock_guard<std::mutex> lock(g_capeMutex);
+    if (g_capeBytes.empty()) return;
+    keyBytes = g_capeBytes;
+  }
+  SetContentSubstitution(keyBytes.data(), keyBytes.size(), rgba, width, height);
+}
+
+void ClearCapeSubstitution() {
+  // Removing the local cape override must not disturb any other substitution, so this is the
+  // registry's own remove-by-key path rather than a clear-all. Recompute the captured key and drop
+  // just that entry.
+  std::vector<std::uint8_t> keyBytes;
+  {
+    std::lock_guard<std::mutex> lock(g_capeMutex);
+    keyBytes = g_capeBytes;
+  }
+  if (keyBytes.empty()) return;
+  const std::uint64_t hash = Fnv1a(keyBytes.data(), keyBytes.size());
+  std::lock_guard<std::mutex> lock(g_subMutex);
+  g_subPixels.erase(hash);
+  g_subMeta.erase(hash);
+}
+
+std::uint32_t CapeSubstitutionCount() {
+  return g_capeSubstitutions.load(std::memory_order_relaxed);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -599,6 +726,18 @@ void ReadMceImageHookDiagnostics(std::uint64_t out[4]) {
   out[1] = g_imagePathVerified.load(std::memory_order_relaxed) ? 1U : 0U;
   out[2] = g_imagePathVerified.load(std::memory_order_relaxed) ? 1U : 0U;
   out[3] = g_hookInstalled.load(std::memory_order_relaxed) ? 1U : 0U;
+}
+
+void ReadCapeCaptureDiagnostics(std::uint64_t out[4]) {
+  if (out == nullptr) return;
+  {
+    std::lock_guard<std::mutex> lock(g_capeMutex);
+    out[0] = (!g_capeBytes.empty() && g_capeWidth != 0) ? 1U : 0U;
+    out[1] = static_cast<std::uint64_t>(g_capeBytes.size());
+    out[2] = static_cast<std::uint64_t>(g_capeWidth);
+    out[3] = static_cast<std::uint64_t>(g_capeHeight);
+  }
+  out[2] |= static_cast<std::uint64_t>(g_capeSubstitutions.load(std::memory_order_relaxed)) << 32;
 }
 
 } // namespace pl::runtime
