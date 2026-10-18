@@ -16,8 +16,8 @@
 #include <vector>
 
 #include "pl/Logger.hpp"
-#include "pl/cosmetics/NativeCosmeticRenderer.hpp"
 #include "pl/render/CameraSource.h"
+#include "pl/render/GlesProbe.hpp"
 #include "pl/runtime/GameLocalPlayer.h"
 
 namespace pl::render {
@@ -30,7 +30,7 @@ std::vector<RenderCallback> g_callbacks;
 void QueryViewport(int &width, int &height) {
   width = 0;
   height = 0;
-  const pl::cosmetics::GlesFunctions gles = pl::cosmetics::ResolveGles();
+  const GlesFunctions gles = ResolveGles();
   if (!gles.GetIntegerv) return;
   using GetIntegervFn = void (*)(std::uint32_t, std::int32_t *);
   auto getIntegerv = reinterpret_cast<GetIntegervFn>(gles.GetIntegerv);

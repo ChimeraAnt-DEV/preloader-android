@@ -10,9 +10,7 @@
 
 #include "pl/Logger.hpp"
 #include "pl/Render.hpp"
-#include "pl/cosmetics/CosmeticDrawGate.hpp"
 #include "pl/cosmetics/NativeCosmeticContext.hpp"
-#include "pl/cosmetics/NativeCosmeticRenderer.hpp"
 #include "pl/hooks/DobbyHookManager.hpp"
 #include "pl/memory/Signature.hpp"
 #include "pl/memory/Vtable.hpp"
@@ -26,7 +24,7 @@
 namespace pl::cosmetics {
 
 // Forward declaration defined after the anonymous namespace; the post-render callback.
-void DrawCosmeticsCallback();
+void OnPlayerRenderFrame();
 
 namespace {
 
@@ -39,10 +37,6 @@ constexpr const char *kVerifiedMaxVersion = "";
 std::atomic_bool g_hookInstalled{false};
 std::atomic_bool g_callbackLive{false};
 
-std::atomic<std::uint32_t> g_cosmeticFrameTick{0};
-std::atomic<std::uint64_t> g_lastDrawnFrameVersion{0};
-// The decision the last render call made, for the diagnostics report (0 = Draw).
-std::atomic<int> g_lastDrawDecision{0};
 // Whether the anchor for the last frame came from the engine's view-projection (true) or the
 // first-person fallback (false). A device pass/fail test must be able to tell these apart.
 std::atomic_bool g_lastAnchorFromEngine{false};
@@ -117,82 +111,18 @@ Mat4 GetCosmeticWorld() {
 }
 
 /**
- * @brief Rasterises the equipped cosmetics for the current frame.
+ * @brief Records that the player-render seam fired this frame.
  *
- * Called after the game's player render. Pulls the frame + geometry blobs from the registry and the
- * first cape override as the atlas, then hands them to {@link NativeCosmeticRenderer}. All failure
- * modes are handled inside the renderer (bounds checks, GLES availability); the only thing this
- * method does is marshal the inputs.
- *
- * <p><b>Which player?</b> The hook's render arguments are an unknown ABI, so the callback cannot
- * inspect which model is being drawn. The honest scoping available is: the cosmetic frame is
- * published by the launcher <em>for the local player</em>, and the local-player feed is live only
- * while the game has a live local player. So this only draws when {@code ReadLocalPlayerPosition}
- * is live (i.e. we are in a world and the local player exists).
+ * Called after the game's player render. The cosmetic meshes themselves are no longer rasterised
+ * here: a cosmetic reaches the game through the engine's own texture/image pipeline (the cape
+ * texture swap), which does not need a GL draw and therefore works on a Vulkan-only build. All this
+ * callback does is mark the seam live so the launcher can confirm the hook is installed and the
+ * renderer has run.
  */
-void DrawCosmeticsCallback() {
+void OnPlayerRenderFrame() {
   // The callback only runs because the render hook is installed and the game rendered a frame, so
-  // its invocation is the honest "the render seam is live" signal — independent of whether anything
-  // is equipped this frame.
+  // its invocation is the honest "the render seam is live" signal.
   g_callbackLive.store(true, std::memory_order_relaxed);
-
-  // The debug cube must be drawable even with nothing equipped, so its gate is checked before the
-  // "nothing equipped" and "no geometry" checks. The gate is pure and host-tested
-  // (CosmeticDrawGate.hpp) because getting it wrong is invisible on a build machine.
-  const bool debugCubeArmed = IsDebugCubeEnabled();
-
-  const pl::runtime::CosmeticFrameHeader cosmetic = pl::runtime::ReadCosmeticFrameHeader();
-
-  // Snapshot the registry frame. Java publishes at most once per game tick while the renderer runs
-  // every frame, so the latest snapshot is drawn on EVERY render call; the version is recorded for
-  // the diagnostics only and must never gate the draw (that gate was the flicker bug).
-  std::vector<std::uint8_t> frameBytes;
-  std::uint64_t version = 0;
-  const bool hasFrame = pl::runtime::CosmeticFrameSnapshot(frameBytes, version);
-
-  float probe[3] = {0.0F, 0.0F, 0.0F};
-  const bool localPlayerLive = pl::runtime::ReadLocalPlayerPosition(probe);
-
-  std::vector<std::uint8_t> geometry;
-  pl::runtime::RenderGeometryData(geometry);
-
-  const DrawDecision decision = DecideCosmeticDraw(
-      cosmetic.valid && hasFrame, cosmetic.flags, debugCubeArmed, localPlayerLive,
-      geometry.size());
-  g_lastDrawDecision.store(static_cast<int>(decision), std::memory_order_relaxed);
-  if (decision != DrawDecision::Draw) {
-    return;
-  }
-  g_cosmeticFrameTick.fetch_add(1, std::memory_order_relaxed);
-  g_lastDrawnFrameVersion.store(version, std::memory_order_relaxed);
-
-  // Copy each piece's atlas out of the registry under the lock. The old code handed out a pointer
-  // into the registry and used it after the lock was released, so a concurrent override change could
-  // free the pixels out from under the render thread. Copies are cheap here (a few tens of KB per
-  // frame) and are what makes the read race-free. The renderer keys pieces by role, so the local
-  // player's cape/hat/pet never pick up another player's override.
-  static thread_local std::vector<std::uint8_t> capePixels;
-  static thread_local std::vector<std::uint8_t> hatPixels;
-  static thread_local std::vector<std::uint8_t> petPixels;
-  std::uint32_t capeW = 0, capeH = 0, hatW = 0, hatH = 0, petW = 0, petH = 0;
-  const bool hasCape = pl::runtime::CopyPieceAtlas(pl::runtime::CosmeticPiece::Cape, capePixels,
-                                                   capeW, capeH);
-  const bool hasHat = pl::runtime::CopyPieceAtlas(pl::runtime::CosmeticPiece::Hat, hatPixels,
-                                                  hatW, hatH);
-  const bool hasPet = pl::runtime::CopyPieceAtlas(pl::runtime::CosmeticPiece::Pet, petPixels,
-                                                  petW, petH);
-
-  pl::cosmetics::CosmeticAtlases atlases;
-  if (hasCape) atlases.cape = {capePixels.data(), (int) capeW, (int) capeH};
-  if (hasHat) atlases.hat = {hatPixels.data(), (int) hatW, (int) hatH};
-  if (hasPet) atlases.pet = {petPixels.data(), (int) petW, (int) petH};
-
-  pl::cosmetics::CosmeticDrawResult result = NativeCosmeticRenderer::drawFrame(
-      std::span<const std::uint8_t>(frameBytes.data(), frameBytes.size()),
-      std::span<const std::uint8_t>(geometry.data(), geometry.size()),
-      atlases,
-      GetCosmeticWorld());
-  (void)result;
 }
 
 void SetBoneMatrixSource(BoneMatrixSource *source) {
@@ -214,8 +144,6 @@ RenderStats ReadRenderStats() {
 }
 
 bool IsNativeCosmeticRenderHookLive() { return g_callbackLive.load(std::memory_order_relaxed); }
-
-int LastCosmeticDrawDecision() { return g_lastDrawDecision.load(std::memory_order_relaxed); }
 
 bool LastCameraAnchorFromEngine() {
   return g_anchorKnown.load(std::memory_order_relaxed)
@@ -264,15 +192,12 @@ bool InitNativeCosmeticRenderHook(std::size_t vtableIndex) {
   // Register into the single player-render hook rather than installing a second detour on the same
   // slot. Two detours on one function duplicated the frame accounting and left ownership ambiguous;
   // the feed owns the hook and runs this callback once per frame after the game's render.
-  pl::runtime::RegisterPostRenderCallback(&DrawCosmeticsCallback);
-
-  // Resolve the GLES surface once; on a Vulkan-only build the renderer stays a no-op every frame.
-  NativeCosmeticRenderer::init();
+  pl::runtime::RegisterPostRenderCallback(&OnPlayerRenderFrame);
 
   // Best-effort: resolve the real view-projection matrix once, off the render thread. The scan is
-  // cached in CameraSource and revalidated every frame cheaply; when it is unavailable the renderer
-  // falls back to an anchor built from the live local-player pose (position + rotation), which keeps
-  // the cosmetics on the player rather than at the render origin.
+  // cached in CameraSource and revalidated every frame cheaply; when it is unavailable the anchor
+  // falls back to the live local-player pose (position + rotation), which keeps the anchor on the
+  // player rather than at the render origin.
   pl::render::CameraSource::ResolveOnce();
   if (pl::render::CameraSource::HasResolvedAddress()) {
     preloaderLogger.info(

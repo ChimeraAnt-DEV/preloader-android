@@ -86,14 +86,6 @@ PL_EXPORT Mat4 GetCosmeticWorld();
 PL_EXPORT bool IsNativeCosmeticRenderHookLive();
 
 /**
- * @brief The decision the last render call made, as an int matching {@code DrawDecision}.
- *
- * 0 = Draw; the other values name the gate that skipped the draw. Reported in diagnostics so a
- * device run shows <em>why</em> nothing was drawn, not just that nothing was.
- */
-PL_EXPORT int LastCosmeticDrawDecision();
-
-/**
  * @brief Whether the anchor the last frame used came from the engine's view-projection.
  *
  * Returns true for the engine camera or a mod-set override, false for the first-person fallback

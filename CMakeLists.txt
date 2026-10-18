@@ -31,8 +31,6 @@ set(PRELOADER_SOURCES
         src/pl/cosmetics/NativeModelMatrix.cpp
         src/pl/cosmetics/NativeCosmeticData.cpp
         src/pl/cosmetics/NativeCosmeticContext.cpp
-        src/pl/cosmetics/NativeCosmeticRenderer.cpp
-        src/pl/cosmetics/CosmeticParticles.cpp
         src/pl/cosmetics/NativeRenderHook.cpp
         src/pl/cosmetics/animation/AnimationSolver.cpp
         src/pl/cosmetics/animation/AnimationJni.cpp
@@ -40,6 +38,7 @@ set(PRELOADER_SOURCES
         src/pl/cosmetics/network/CosmeticSocketClient.cpp
         src/pl/cosmetics/network/CosmeticSyncJni.cpp
         src/pl/render/CameraSource.cpp
+        src/pl/render/GlesProbe.cpp
         src/pl/render/RenderApi.cpp
         src/pl/hooks/DobbyHookManager.cpp
         src/pl/runtime/GameHookRules.cpp

@@ -83,15 +83,8 @@ compile_run JniAttachTest \
 compile_run SnapshotChannelTest \
   "$here/SnapshotChannelTest.cpp" -pthread
 
-compile_run CosmeticParticlesTest \
-  "$root/src/pl/cosmetics/CosmeticParticles.cpp" \
-  "$here/CosmeticParticlesTest.cpp"
-
 compile_run GameHookRuleMergeTest \
   "$here/GameHookRuleMergeTest.cpp"
-
-compile_run CosmeticDrawGateTest \
-  "$here/CosmeticDrawGateTest.cpp"
 
 compile_run ModuleMapTest \
   "$root/src/pl/runtime/ModuleMap.cpp" \

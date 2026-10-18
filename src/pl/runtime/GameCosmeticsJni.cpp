@@ -4,8 +4,8 @@
 #include <cstring>
 #include <vector>
 
-#include "pl/cosmetics/NativeCosmeticRenderer.hpp"
 #include "pl/cosmetics/NativeRenderHook.hpp"
+#include "pl/render/GlesProbe.hpp"
 #include "pl/runtime/GameCosmetics.h"
 #include "pl/runtime/GameHookRules.h"
 #include "pl/runtime/GameLocalPlayer.h"
@@ -165,20 +165,6 @@ JNIEXPORT jboolean JNICALL
 Java_org_chimeramc_client_preloader_PreloaderInput_nativeIsCosmeticsHookLive(JNIEnv *, jclass) {
   return (pl::runtime::IsSkinCapeHookLive() || pl::runtime::IsTextureHookLive())
              ? JNI_TRUE : JNI_FALSE;
-}
-
-JNIEXPORT jboolean JNICALL
-Java_org_chimeramc_client_preloader_PreloaderInput_nativeIsRendererDrawable(JNIEnv *, jclass) {
-  // The native renderer can actually draw cosmetics only when BOTH the player-render hook is live
-  // AND the GLES draw path was resolved. On a Vulkan-only RenderDragon build the GLES half is
-  // unavailable, so the honest status is "not drawable" even though the hook fires.
-  return (pl::cosmetics::IsNativeCosmeticRenderHookLive() && pl::cosmetics::NativeCosmeticRenderer::init())
-             ? JNI_TRUE : JNI_FALSE;
-}
-
-JNIEXPORT jint JNICALL
-Java_org_chimeramc_client_preloader_PreloaderInput_nativeCosmeticDrawCount(JNIEnv *, jclass) {
-  return static_cast<jint>(pl::cosmetics::NativeCosmeticRenderer::drawCount());
 }
 
 // The per-piece local atlases. Java hands each piece its own texture so the cape, hat and pet are
@@ -345,8 +331,8 @@ Java_org_chimeramc_client_preloader_PreloaderInput_nativeReadRenderDiagnostics(J
   }
 
   // GL backend and whether a context is current.
-  values[2] = static_cast<jint>(pl::cosmetics::GlesBackend());
-  values[3] = pl::cosmetics::IsEglContextCurrent() ? 1 : 0;
+  values[2] = static_cast<jint>(pl::render::GlesBackend());
+  values[3] = pl::render::IsEglContextCurrent() ? 1 : 0;
 
   // Hook installed / frames seen, from the player-render feed.
   std::uint32_t stats[4] = {0, 0, 0, 0};
@@ -354,16 +340,16 @@ Java_org_chimeramc_client_preloader_PreloaderInput_nativeReadRenderDiagnostics(J
   values[4] = pl::cosmetics::IsNativeCosmeticRenderHookLive() ? 1 : 0;
   values[5] = live ? static_cast<jint>(stats[0]) : -1;
 
-  values[6] = pl::cosmetics::LastGlesError();
+  values[6] = pl::render::LastGlesError();
 
   std::size_t geometryBytes = pl::runtime::RenderGeometrySize();
   values[7] = geometryBytes > 0 ? static_cast<jint>(geometryBytes) : -1;
 
   values[8] = pl::runtime::PieceAtlasMask();
 
-  // --- Stage 1.3 / 1.2 / 1.4 / 5 diagnostics -------------------------------------------------
-  // The last cosmetic draw decision (0 = draw; the enum names the gate that skipped).
-  values[9] = pl::cosmetics::LastCosmeticDrawDecision();
+  // Index 9 used to carry the GLES rasteriser's last draw decision. That rasteriser is retired (the
+  // cape reaches the game through the engine texture swap), so the field reads "unknown".
+  values[9] = -1;
 
   // Whether the local-player feed produced a position this frame (the cosmetics' local scope).
   float probePosition[3] = {0.0F, 0.0F, 0.0F};
@@ -381,8 +367,8 @@ Java_org_chimeramc_client_preloader_PreloaderInput_nativeReadRenderDiagnostics(J
   // cheapest proof there is only one.
   values[15] = pl::runtime::CountModuleMappings("libpreloader.so");
 
-  // Triangles submitted this session (Stage 6), so a device can say "drew N triangles".
-  values[16] = static_cast<jint>(pl::cosmetics::NativeCosmeticRenderer::triangleCount());
+  // Index 16 used to carry the GLES rasteriser's triangle count; retired with the rasteriser.
+  values[16] = -1;
 
   jintArray out = env->NewIntArray(kFields);
   if (out == nullptr) return nullptr;
@@ -421,17 +407,6 @@ Java_org_chimeramc_client_preloader_PreloaderInput_nativeCameraAnchorSource(JNIE
   return pl::cosmetics::LastCameraAnchorFromEngine() ? 1 : 0;
 }
 
-
-JNIEXPORT void JNICALL
-Java_org_chimeramc_client_preloader_PreloaderInput_nativeSetCosmeticDebugCube(JNIEnv *, jclass,
-                                                                              jboolean enabled) {
-  pl::cosmetics::SetDebugCube(enabled == JNI_TRUE);
-}
-
-JNIEXPORT jboolean JNICALL
-Java_org_chimeramc_client_preloader_PreloaderInput_nativeIsDebugCubeEnabled(JNIEnv *, jclass) {
-  return pl::cosmetics::IsDebugCubeEnabled() ? JNI_TRUE : JNI_FALSE;
-}
 
 // Returns the captured base-skin texture as {rgba bytes, width, height, format} in one byte[]:
 // a 16-byte little-endian header (width, height, format, stampMs) followed by the payload. Null
