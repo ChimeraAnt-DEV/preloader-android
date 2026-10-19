@@ -165,23 +165,25 @@ bool InitNativeCosmeticRenderHook(std::size_t vtableIndex) {
     return g_callbackLive.load(std::memory_order_relaxed);
   }
 
-  // Only the builds whose slot index is verified may be hooked. On an unverified build the RTTI
-  // name still resolves to a real function, so a stale index would detour an unrelated slot and
-  // fault the render thread; fail safe to the resource-pack path instead.
-  if (!pl::runtime::MatchesConfiguredVersion(kVerifiedMinVersion, kVerifiedMaxVersion)) {
-    preloaderLogger.warn(
-        "Native cosmetics: build outside the verified range {}-{}; not hooking the render seam",
-        kVerifiedMinVersion, kVerifiedMaxVersion);
-    return false;
-  }
-
   // Confirm the render entry resolves on this build (by string, so the slot index does not matter).
-  // A resolution failure means the whole version gate was too optimistic; keep the pack path.
+  // Item 6: the live probe is the gate. A successful string resolution proves the seam is present
+  // and executable-checked, so the version string is not consulted for it; the version floor only
+  // guards the weaker configured-index fallback, where a stale index would detour an unrelated
+  // slot and fault the render thread.
   std::uintptr_t renderCheck = pl::memory::resolveVtableSlotReferencingString(
       "18LivePlayerRenderer", "variable.player_x_rotation", kGameModule, 200);
-  if (!renderCheck && vtableIndex != 0) {
-    renderCheck = pl::memory::resolveVtableFunction("18LivePlayerRenderer", vtableIndex,
-                                                    kGameModule);
+  if (!renderCheck) {
+    if (!pl::runtime::MatchesConfiguredVersion(kVerifiedMinVersion, kVerifiedMaxVersion)) {
+      preloaderLogger.warn(
+          "Native cosmetics: build outside the verified range {}-{} and the live probe found no "
+          "render slot; not hooking the render seam",
+          kVerifiedMinVersion, kVerifiedMaxVersion);
+      return false;
+    }
+    if (vtableIndex != 0) {
+      renderCheck = pl::memory::resolveVtableFunction("18LivePlayerRenderer", vtableIndex,
+                                                      kGameModule);
+    }
   }
   if (!renderCheck) {
     preloaderLogger.warn(

@@ -182,28 +182,33 @@ void InitPlayerRenderSource(std::size_t vtableIndex) {
     return;
   }
 
-  // Only the builds whose slot index is verified may be hooked. An unverified build fails safe
-  // to the resource-pack path rather than installing a detour on an unrelated slot.
-  if (!MatchesConfiguredVersion(kVerifiedMinVersion, kVerifiedMaxVersion)) {
-    refuse(kReasonVersionGate);
-    preloaderLogger.warn(
-        "Player-render feed: running build is outside the verified range {}-{}; native "
-        "cosmetics stay on the resource-pack path",
-        kVerifiedMinVersion, kVerifiedMaxVersion);
-    return;
-  }
-
   // Resolve the render entry first by the diagnostic string its body references, so a build whose
   // slot index moved can still resolve without a per-build number. When the string scan finds
   // nothing (verified: the render diagnostic is not referenced by any LivePlayerRenderer vtable
   // slot on 26.52, so the scan correctly declines there), fall back to the configured index and
   // then the default.
+  //
+  // Item 6: the version gate guards only the fallback. A successful live probe (the slot's body
+  // references the render diagnostic, and the address is executable) is stronger evidence than the
+  // version string, so it installs on any build without a per-build rule. The version floor then
+  // only applies to the weaker configured-index path, where a stale index is the risk.
   std::size_t resolvedSlot = 0;
   std::uintptr_t renderFn = pl::memory::resolveVtableSlotReferencingString(
       "18LivePlayerRenderer", "variable.player_x_rotation", kGameModule, 200, &resolvedSlot);
   std::size_t slot = resolvedSlot;
   bool byString = renderFn != 0;
   if (!renderFn) {
+    // Fallback path: only the builds whose slot index is verified may be hooked. An unverified
+    // build fails safe to the resource-pack path rather than installing a detour on an unrelated
+    // slot.
+    if (!MatchesConfiguredVersion(kVerifiedMinVersion, kVerifiedMaxVersion)) {
+      refuse(kReasonVersionGate);
+      preloaderLogger.warn(
+          "Player-render feed: running build is outside the verified range {}-{} and the live "
+          "probe found no render slot; native cosmetics stay on the resource-pack path",
+          kVerifiedMinVersion, kVerifiedMaxVersion);
+      return;
+    }
     slot = vtableIndex != 0 ? vtableIndex : kDefaultRenderSlot;
     renderFn = pl::memory::resolveVtableFunction("18LivePlayerRenderer", slot, kGameModule);
   }
