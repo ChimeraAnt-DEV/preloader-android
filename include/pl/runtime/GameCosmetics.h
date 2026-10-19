@@ -279,4 +279,20 @@ bool IsTextureHookLive();
  */
 bool ReadCosmeticsStats(std::uint32_t out[4]);
 
+/**
+ * @brief Reads the skin-path seam observation (item 3).
+ *
+ * The join-packet and texture-bind counters, classified by
+ * {@code pl::cosmetics::ClassifySkinSeam}. The payload fields themselves are not readable in this
+ * build (game symbols are stripped), so this reports which stage the skin path reached, never a
+ * skin id it did not read.
+ *
+ * @param out Receives {stage, packetHookInstalled, packetCalls, textureCalls, skinCaptured}.
+ * @return true when the values were written.
+ */
+bool ReadSkinSeam(std::uint32_t out[5]);
+
+/** The one-line explanation for a {@link ReadSkinSeam} stage, for the diagnostics report. */
+const char *DescribeSkinSeamStage(std::uint32_t stage);
+
 } // namespace pl::runtime

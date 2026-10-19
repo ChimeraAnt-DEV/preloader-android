@@ -209,6 +209,30 @@ Java_org_chimeramc_client_preloader_PreloaderInput_nativeReadCosmeticsStats(JNIE
   return out;
 }
 
+// Item 3: the skin-path seam observation. Returns {stage, packetHookInstalled, packetCalls,
+// textureCalls, skinCaptured}. The stage is the honest classification: the payload fields are not
+// readable in this build, so the report names the stage reached, not a skin id it never read.
+JNIEXPORT jintArray JNICALL
+Java_org_chimeramc_client_preloader_PreloaderInput_nativeReadSkinSeam(JNIEnv *env, jclass) {
+  std::uint32_t seam[5] = {0, 0, 0, 0, 0};
+  if (!pl::runtime::ReadSkinSeam(seam)) return nullptr;
+  jint values[5];
+  for (int i = 0; i < 5; ++i) values[i] = static_cast<jint>(seam[i]);
+  jintArray out = env->NewIntArray(5);
+  if (out == nullptr) return nullptr;
+  env->SetIntArrayRegion(out, 0, 5, values);
+  return out;
+}
+
+// The one-line explanation for a stage, so the wording lives in one place (the native rule) and the
+// launcher does not paraphrase it.
+JNIEXPORT jstring JNICALL
+Java_org_chimeramc_client_preloader_PreloaderInput_nativeDescribeSkinSeam(JNIEnv *env, jclass,
+                                                                         jint stage) {
+  const char *text = pl::runtime::DescribeSkinSeamStage(static_cast<std::uint32_t>(stage));
+  return env->NewStringUTF(text == nullptr ? "" : text);
+}
+
 // ---------------------------------------------------------------------------------------------
 // The mce::Image pipeline surface
 //

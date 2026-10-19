@@ -7,6 +7,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "pl/cosmetics/SkinSeamObservation.hpp"
 #include "pl/Logger.hpp"
 #include "pl/memory/Hook.hpp"
 #include "pl/memory/Signature.hpp"
@@ -556,6 +557,32 @@ bool IsSkinCapeHookLive() {
 
 bool IsTextureHookLive() {
   return pl_runtime_passthrough_textureBind_ptr()->counter.load(std::memory_order_relaxed) != 0;
+}
+
+bool ReadSkinSeam(std::uint32_t out[5]) {
+  // Item 3: the join/texture seam counters, so a bug report can name the stage the skin path
+  // reached. The payload fields are not readable in this build (see SkinSeamObservation.hpp), so
+  // this reports reach, never a skin id it did not read.
+  if (out == nullptr) return false;
+  const bool packetInstalled = g_packetHookInstalled.load(std::memory_order_relaxed);
+  const std::uint32_t packetCalls =
+      pl_runtime_passthrough_packetRead_ptr()->counter.load(std::memory_order_relaxed);
+  const bool textureInstalled = g_textureHookInstalled.load(std::memory_order_relaxed);
+  const std::uint32_t textureCalls =
+      pl_runtime_passthrough_textureBind_ptr()->counter.load(std::memory_order_relaxed);
+  const bool skinCaptured = pl::runtime::HasCapturedSkin();
+  const auto stage = cosmetics::ClassifySkinSeam(packetInstalled, packetCalls, textureInstalled,
+                                                 textureCalls, skinCaptured);
+  out[0] = static_cast<std::uint32_t>(stage);
+  out[1] = packetInstalled ? 1U : 0U;
+  out[2] = packetCalls;
+  out[3] = textureCalls;
+  out[4] = skinCaptured ? 1U : 0U;
+  return true;
+}
+
+const char *DescribeSkinSeamStage(std::uint32_t stage) {
+  return cosmetics::DescribeSkinSeam(static_cast<cosmetics::SkinSeamStage>(stage));
 }
 
 bool ReadCosmeticsStats(std::uint32_t out[4]) {
