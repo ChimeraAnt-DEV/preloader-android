@@ -89,6 +89,9 @@ compile_run GameHookRuleMergeTest \
 compile_run RuleProbeTest \
   "$here/RuleProbeTest.cpp"
 
+compile_run FramePacingTest \
+  "$here/FramePacingTest.cpp"
+
 compile_run ModuleMapTest \
   "$root/src/pl/runtime/ModuleMap.cpp" \
   "$here/ModuleMapTest.cpp"

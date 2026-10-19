@@ -13,6 +13,7 @@
 #include "pl/memory/Hook.hpp"
 #include "pl/memory/Signature.hpp"
 #include "pl/memory/Vtable.hpp"
+#include "pl/render/FramePacing.hpp"
 #include "pl/render/RenderDispatch.h"
 #include "pl/runtime/GameHookRules.h"
 
@@ -82,6 +83,21 @@ long long MonotonicMs() {
   return static_cast<long long>(ts.tv_sec) * 1000LL + ts.tv_nsec / 1000000LL;
 }
 
+long long MonotonicUs() {
+  timespec ts{};
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return static_cast<long long>(ts.tv_sec) * 1000000LL + ts.tv_nsec / 1000LL;
+}
+
+// Item 11: the render thread's own frame-time reading. Fed from the render tick below and read by
+// the diagnostics; it measures and reports only, it does not reschedule the engine's frame
+// submission (that needs the engine's swap/present call, which the stripped binary does not expose).
+pl::render::FramePacingAnalyzer g_framePacing;
+std::atomic<int> g_displayRefreshHz{0};
+std::atomic<long long> g_framePacingAverageUs{0};
+std::atomic<long long> g_framePacingWorstUs{0};
+std::atomic<int> g_framePacingFlags{0}; // bit0 jittering, bit1 vsync-locked
+
 // The detour. It runs on the render thread, once per rendered player model. It records the
 // tick and call counts, forwards every argument unchanged, then runs the registered post-render
 // callbacks.
@@ -106,6 +122,20 @@ void HookRender(void *a, void *b, void *c, void *d, void *e, void *f, void *g, v
   }
   g_totalCalls.fetch_add(1, std::memory_order_relaxed);
   g_lastRenderMs.store(now, std::memory_order_relaxed);
+
+  // Item 11: feed the frame-time analyzer. The render entry runs once per rendered player model, so
+  // a 3ms floor collapses several draws inside one frame to a single sample; the reading is then the
+  // real frame interval. The analyzer is plain (render-thread only); the snapshot is atomics.
+  {
+    const pl::render::FramePacingReading pacing =
+        g_framePacing.onFrame(MonotonicUs(), g_displayRefreshHz.load(std::memory_order_relaxed), 3000);
+    g_framePacingAverageUs.store(pacing.averageFrameUs, std::memory_order_relaxed);
+    g_framePacingWorstUs.store(pacing.worstFrameUs, std::memory_order_relaxed);
+    int flags = 0;
+    if (pacing.jittering) flags |= 1;
+    if (pacing.vsyncLocked) flags |= 2;
+    g_framePacingFlags.store(flags, std::memory_order_relaxed);
+  }
 
   // Publish a self-contained frame record for off-thread consumers. The render thread does only this
   // bounded seqlock write (no lock, no allocation); the consumer reads a consistent copy elsewhere.
@@ -252,6 +282,22 @@ void InitPlayerRenderSource(std::size_t vtableIndex) {
 
 int RenderHookFailureReason() {
   return g_renderFailureReason.load(std::memory_order_relaxed);
+}
+
+void SetDisplayRefreshHz(int hz) {
+  g_displayRefreshHz.store(hz > 0 ? hz : 0, std::memory_order_relaxed);
+}
+
+bool ReadFramePacing(long long &outAverageUs, long long &outWorstUs, bool &outJittering,
+                     bool &outVsyncLocked) {
+  const long long average = g_framePacingAverageUs.load(std::memory_order_relaxed);
+  if (average <= 0) return false;
+  outAverageUs = average;
+  outWorstUs = g_framePacingWorstUs.load(std::memory_order_relaxed);
+  const int flags = g_framePacingFlags.load(std::memory_order_relaxed);
+  outJittering = (flags & 1) != 0;
+  outVsyncLocked = (flags & 2) != 0;
+  return true;
 }
 
 bool LastResolvedRenderSlot(std::size_t &outSlot, bool &outByString) {

@@ -91,6 +91,23 @@ bool LastResolvedRenderSlot(std::size_t &outSlot, bool &outByString);
 int RenderHookFailureReason();
 
 /**
+ * @brief Sets the display's refresh rate, so the frame-pacing reading (item 11) can decide whether
+ *        frames are vsync-locked. 0 means unknown, in which case a lock is never claimed.
+ */
+void SetDisplayRefreshHz(int hz);
+
+/**
+ * @brief The render-thread frame-pacing reading (item 11), or false before two frames are seen.
+ *
+ * <p>{@code outAverageUs}/{@code outWorstUs} are microsecond frame intervals; {@code outJittering}
+ * means a recent frame exceeded the expected interval; {@code outVsyncLocked} means the average
+ * matched the display interval. This measures the render thread's own frame arrival; it does not
+ * reschedule the engine's submission.
+ */
+bool ReadFramePacing(long long &outAverageUs, long long &outWorstUs, bool &outJittering,
+                     bool &outVsyncLocked);
+
+/**
  * @brief A callback that runs once per rendered player model, after the game's own render, on the
  *        render thread with the GL context current.
  *
