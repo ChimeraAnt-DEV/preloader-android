@@ -376,6 +376,13 @@ Java_org_chimeramc_client_preloader_PreloaderInput_nativeReadRenderDiagnostics(J
   return out;
 }
 
+// Item 18: the exact gate that refused the render hook (0 = live, 1 = version gate, 2 = slot
+// unresolved, 3 = not executable, 4 = hook() failed), so the diagnostics report names the failure.
+JNIEXPORT jint JNICALL
+Java_org_chimeramc_client_preloader_PreloaderInput_nativeRenderHookFailureReason(JNIEnv *, jclass) {
+  return static_cast<jint>(pl::runtime::RenderHookFailureReason());
+}
+
 // The local-player feed: {live, xBits, yBits, zBits, yawBits, pitchBits}. Floats are returned as
 // their raw int bits so a single int[] crosses JNI; the caller decodes with Float.intBitsToFloat.
 JNIEXPORT jintArray JNICALL

@@ -65,6 +65,11 @@ std::atomic<std::size_t> g_resolvedSlot{0};
 std::atomic_bool g_resolvedByString{false};
 std::atomic_bool g_slotKnown{false};
 
+// Item 18 (preloader update list): the exact gate that refused the render hook, so the diagnostics
+// report names "version outside the verified range" rather than a generic "unavailable". 0 = no
+// failure (installed or still pending).
+std::atomic_int g_renderFailureReason{0};
+
 // The single post-render seam. A fixed small table so registration allocates nothing and the
 // render thread never locks. At most 4 consumers (cosmetics + future mods).
 constexpr std::size_t kMaxPostRenderCallbacks = 4;
@@ -149,9 +154,20 @@ void InitPlayerRenderSource(std::size_t vtableIndex) {
     return;
   }
 
+  // Item 18: record exactly which gate refused the hook. 0 means the hook is live (or a refusal
+  // reason that predates the field, which prints as "unknown" on the Java side).
+  auto refuse = [](int reason) {
+    g_renderFailureReason.store(reason, std::memory_order_relaxed);
+  };
+  constexpr int kReasonVersionGate = 1;
+  constexpr int kReasonSlotUnresolved = 2;
+  constexpr int kReasonNotExecutable = 3;
+  constexpr int kReasonHookFailed = 4;
+
   // Only the builds whose slot index is verified may be hooked. An unverified build fails safe
   // to the resource-pack path rather than installing a detour on an unrelated slot.
   if (!MatchesConfiguredVersion(kVerifiedMinVersion, kVerifiedMaxVersion)) {
+    refuse(kReasonVersionGate);
     preloaderLogger.warn(
         "Player-render feed: running build is outside the verified range {}-{}; native "
         "cosmetics stay on the resource-pack path",
@@ -174,6 +190,7 @@ void InitPlayerRenderSource(std::size_t vtableIndex) {
     renderFn = pl::memory::resolveVtableFunction("18LivePlayerRenderer", slot, kGameModule);
   }
   if (!renderFn) {
+    refuse(kReasonSlotUnresolved);
     preloaderLogger.warn(
         "Player-render feed: LivePlayerRenderer slot unresolved; native cosmetics "
         "stay on the resource-pack path");
@@ -183,6 +200,7 @@ void InitPlayerRenderSource(std::size_t vtableIndex) {
   // stale index can land on a data pointer. Refuse to detour anything that is not executable code,
   // so the widened version gate cannot turn a wrong slot into a render-thread fault.
   if (!pl::memory::isExecutableAddress(renderFn, kGameModule)) {
+    refuse(kReasonNotExecutable);
     preloaderLogger.warn(
         "Player-render feed: LivePlayerRenderer slot {} did not resolve to executable code; "
         "skipping the hook",
@@ -195,16 +213,22 @@ void InitPlayerRenderSource(std::size_t vtableIndex) {
                        reinterpret_cast<pl::memory::FuncPtr *>(&g_origRender),
                        pl::memory::HookPriority::Normal,
                        "LivePlayerRenderer::render") != 0) {
+    refuse(kReasonHookFailed);
     preloaderLogger.warn(
         "Player-render feed: hook install failed; native cosmetics stay on the "
         "resource-pack path");
   } else {
     preloaderLogger.info("Player-render feed: LivePlayerRenderer::render hooked (slot {})",
                          slot);
+    g_renderFailureReason.store(0, std::memory_order_relaxed);
     g_resolvedSlot.store(slot, std::memory_order_relaxed);
     g_resolvedByString.store(byString, std::memory_order_relaxed);
     g_slotKnown.store(true, std::memory_order_relaxed);
   }
+}
+
+int RenderHookFailureReason() {
+  return g_renderFailureReason.load(std::memory_order_relaxed);
 }
 
 bool LastResolvedRenderSlot(std::size_t &outSlot, bool &outByString) {

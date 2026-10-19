@@ -81,6 +81,16 @@ long long LastPlayerRenderMs();
 bool LastResolvedRenderSlot(std::size_t &outSlot, bool &outByString);
 
 /**
+ * @brief The exact gate that refused the render hook (item 18 of the preloader update list).
+ *
+ * <p>0 = hook live (or reason predates the field); 1 = build outside the verified version range;
+ * 2 = render slot unresolved; 3 = slot resolved to non-executable data; 4 = hook install call
+ * failed. The in-app diagnostics report maps each to a user-readable sentence instead of a generic
+ * "unavailable".
+ */
+int RenderHookFailureReason();
+
+/**
  * @brief A callback that runs once per rendered player model, after the game's own render, on the
  *        render thread with the GL context current.
  *
