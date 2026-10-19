@@ -13,6 +13,7 @@
 #include "pl/memory/Vtable.hpp"
 #include "pl/runtime/GameHookRules.h"
 #include "pl/runtime/GamePlayerRender.h"
+#include "pl/runtime/RegisterAwareHook.h"
 #include "pl/runtime/mce_image_hook.hpp"
 
 namespace pl::runtime {
@@ -52,9 +53,6 @@ constexpr const char *kPacketHandlerTypeName = "20ClientNetworkHandler";
 // rule-driven path only; with no verified slot the hook is not installed.
 constexpr const char *kTextureTypeName = "12TextureAtlas";
 
-std::atomic<std::uint32_t> g_skinCapeCalls{0};
-std::atomic<std::uint32_t> g_textureCalls{0};
-std::atomic<std::uint32_t> g_packetCalls{0};
 std::atomic_bool g_skinHookInstalled{false};
 std::atomic_bool g_textureHookInstalled{false};
 std::atomic_bool g_packetHookInstalled{false};
@@ -123,36 +121,30 @@ const CosmeticImage *Find(const std::unordered_map<std::uint64_t, CosmeticImage>
 
 // --- Hook detours ---------------------------------------------------------------------------
 //
-// Pure passthroughs. The real signatures of the Skin cape accessor and the texture binder are not
-// recoverable (the game strips its symbols), so the detour forwards the full integer argument
-// register set unchanged and dereferences nothing. That is what keeps an unknown ABI safe: a
-// wrong signature cannot read freed memory or mis-handle an object, because no argument is
-// touched. It only records that the hook fired.
+// Pure passthroughs. The real signatures of the skin/cape accessor, the texture binder and the
+// player-join packet handler are not recoverable (the game strips its symbols), so the detours
+// forward every argument register untouched and dereference nothing, which is what keeps an
+// unknown ABI safe. They only record that the hook fired.
+//
+// Unlike a C++ detour that *calls* the original through a function pointer, these detours are
+// register-preserving assembly veneers (RegisterAwareHook.cpp): they save every volatile register
+// (the x0..x7 argument set, the x8 indirect-result register, LR, and the q0..q7 FP argument/return
+// set), bump the call counter, restore every volatile register, and then *branch* to the original
+// trampoline. Branching means the original returns straight to the detour's caller, so whatever
+// the game function returns — an x0 pointer, an x8 sret, a q0 double — reaches the caller exactly
+// as if the hook were not installed. The old void-passthroughs dropped the return register; that
+// worked on arm64 only by accident for x0 and was outright wrong for an x8 indirect result.
 
 using GenericFn = void (*)(void *, void *, void *, void *, void *, void *, void *, void *);
 
+// The per-seam states and veneer entry points (C linkage, defined in RegisterAwareHook.cpp).
 GenericFn g_origSkinCape = nullptr;
 GenericFn g_origTextureBind = nullptr;
-
-void HookSkinCape(void *a, void *b, void *c, void *d, void *e, void *f, void *g, void *h) {
-  g_skinCapeCalls.fetch_add(1, std::memory_order_relaxed);
-  if (g_origSkinCape) g_origSkinCape(a, b, c, d, e, f, g, h);
-}
-
-void HookTextureBind(void *a, void *b, void *c, void *d, void *e, void *f, void *g, void *h) {
-  g_textureCalls.fetch_add(1, std::memory_order_relaxed);
-  if (g_origTextureBind) g_origTextureBind(a, b, c, d, e, f, g, h);
-}
-
 GenericFn g_origPacketRead = nullptr;
 
-void HookPacketRead(void *a, void *b, void *c, void *d, void *e, void *f, void *g, void *h) {
-  g_packetCalls.fetch_add(1, std::memory_order_relaxed);
-  if (g_origPacketRead) g_origPacketRead(a, b, c, d, e, f, g, h);
-}
-
 // Installs one passthrough hook at a resolved vtable slot. Returns true on success.
-bool InstallSlotHook(const char *typeName, std::size_t slot, GenericFn detour,
+bool InstallSlotHook(const char *typeName, std::size_t slot,
+                     pl::runtime::PassthroughContext *context, GenericFn detour,
                      GenericFn *original, std::atomic_bool &flag, const char *label) {
   if (flag.exchange(true, std::memory_order_relaxed)) return true;
   if (slot == 0) {
@@ -183,6 +175,11 @@ bool InstallSlotHook(const char *typeName, std::size_t slot, GenericFn detour,
                        pl::memory::HookPriority::Normal, label) != 0) {
     preloaderLogger.warn("Cosmetics {}: hook install failed", label);
     return false;
+  }
+  // The veneer reads the original trampoline from its own context; publish it so a call made
+  // before install (impossible in practice, but cheap to guard) still forwards correctly.
+  if (context != nullptr) {
+    context->original = reinterpret_cast<void (*)(void)>(*original);
   }
   preloaderLogger.info("Cosmetics {}: hooked {} slot {}", label, typeName, slot);
   return true;
@@ -507,10 +504,12 @@ void InitCosmeticsHooks(std::size_t skinCapeVtableIndex, std::size_t textureBind
   // already hooks (and the cosmetics post-render callback rides on). Installing a second passthrough
   // detour on the same function duplicated the frame accounting and made ownership ambiguous, so it
   // is deliberately NOT installed here; IsSkinCapeHookLive() reports the render feed's liveness.
-  InstallSlotHook(kTextureTypeName, textureSlot, HookTextureBind, &g_origTextureBind,
-                  g_textureHookInstalled, "texture-bind");
-  InstallSlotHook(kPacketHandlerTypeName, packetSlot, HookPacketRead, &g_origPacketRead,
-                  g_packetHookInstalled, "player-join-packet");
+  InstallSlotHook(kTextureTypeName, textureSlot, pl_runtime_passthrough_textureBind_ptr(),
+                  reinterpret_cast<GenericFn>(&pl_runtime_passthrough_textureBind_addr),
+                  &g_origTextureBind, g_textureHookInstalled, "texture-bind");
+  InstallSlotHook(kPacketHandlerTypeName, packetSlot, pl_runtime_passthrough_packetRead_ptr(),
+                  reinterpret_cast<GenericFn>(&pl_runtime_passthrough_packetRead_addr),
+                  &g_origPacketRead, g_packetHookInstalled, "player-join-packet");
 
   // The engine image pipeline. This is the seam that fixes the memory-corruption/black-texture
   // failure: it verifies the recovered loader ABI (sret in x8, flag at +0x10) with a live probe and
@@ -521,7 +520,7 @@ void InitCosmeticsHooks(std::size_t skinCapeVtableIndex, std::size_t textureBind
 }
 
 bool IsPacketHookLive() {
-  return g_packetCalls.load(std::memory_order_relaxed) != 0;
+  return pl_runtime_passthrough_packetRead_ptr()->counter.load(std::memory_order_relaxed) != 0;
 }
 
 std::uintptr_t ImageLoaderAddress() {
@@ -556,13 +555,13 @@ bool IsSkinCapeHookLive() {
 }
 
 bool IsTextureHookLive() {
-  return g_textureCalls.load(std::memory_order_relaxed) != 0;
+  return pl_runtime_passthrough_textureBind_ptr()->counter.load(std::memory_order_relaxed) != 0;
 }
 
 bool ReadCosmeticsStats(std::uint32_t out[4]) {
   if (out == nullptr) return false;
   out[0] = IsPlayerRenderHookLive() ? 1U : 0U;
-  out[1] = g_textureCalls.load(std::memory_order_relaxed);
+  out[1] = pl_runtime_passthrough_textureBind_ptr()->counter.load(std::memory_order_relaxed);
   out[2] = static_cast<std::uint32_t>(CapeOverrideCount());
   out[3] = static_cast<std::uint32_t>(TextureOverrideCount());
   return out[0] != 0 || out[1] != 0;
