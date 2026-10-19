@@ -92,6 +92,11 @@ compile_run RuleProbeTest \
 compile_run FramePacingTest \
   "$here/FramePacingTest.cpp"
 
+compile_run OptifineConfigBoundsTest \
+  -I"$root/src" \
+  "$root/src/pl/runtime/OptifineConfig.cpp" \
+  "$here/OptifineConfigBoundsTest.cpp"
+
 compile_run SkinSeamObservationTest \
   "$here/SkinSeamObservationTest.cpp"
 
