@@ -74,6 +74,44 @@ int main() {
     expect(gate.isResolved(), "a late tick leaves the gate resolved");
   }
 
+  // Item 4: a deferral re-arms the gate so a later tick tries the install again instead of the
+  // gate staying resolved and reporting Wait forever (which lost the install for the session).
+  {
+    HookInstallGate gate;
+    gate.start(0);
+    expect(gate.tick(0) == InstallDecision::Install, "first attempt decides install");
+    expect(gate.isResolved(), "gate resolved after the first attempt");
+    // The install body could not run yet (rules not delivered): re-arm.
+    expect(gate.defer(16) == 1, "first defer is counted");
+    expect(!gate.isResolved(), "a deferred gate is unresolved again");
+    expect(gate.tick(32) == InstallDecision::Install, "a deferred gate retries the install");
+  }
+
+  // A gate that keeps deferring stops at kMaxDefers so a runtime that never delivers the rules
+  // settles instead of retrying forever.
+  {
+    HookInstallGate gate;
+    gate.start(0);
+    int last = 0;
+    for (int i = 0; i < HookInstallGate::kMaxDefers; ++i) {
+      gate.tick(i * 16);
+      last = gate.defer(i * 16 + 1);
+    }
+    expect(last == HookInstallGate::kMaxDefers, "defers are bounded by kMaxDefers");
+    expect(gate.deferredCount() == HookInstallGate::kMaxDefers, "defer count matches");
+  }
+
+  // start() clears the defer count, so a fresh session is not penalised by an earlier one.
+  {
+    HookInstallGate gate;
+    gate.start(0);
+    gate.tick(0);
+    gate.defer(1);
+    expect(gate.deferredCount() == 1, "one defer recorded");
+    gate.start(100);
+    expect(gate.deferredCount() == 0, "start() clears the defer count");
+  }
+
   std::printf("HookInstallGateTest: %d checks passed\n", checks);
   return 0;
 }

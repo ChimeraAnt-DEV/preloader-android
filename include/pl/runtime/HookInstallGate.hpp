@@ -49,15 +49,41 @@ public:
     /** Never wait longer than this for the runtime; a stuck loading screen must not pend forever. */
     static constexpr long long kGiveUpMs = 30'000;
 
+    /** Never defer more than this many times; a runtime that never delivers rules must settle. */
+    static constexpr int kMaxDefers = 8;
+
     /** Arms the gate. {@code nowMs} is a monotonic millisecond timestamp. */
     void start(long long nowMs) {
         startedMs_ = nowMs;
         frameTicks_ = 0;
+        deferredCount_ = 0;
         resolved_ = false;
     }
 
     /** @return true once the gate has produced a decision and will never produce another. */
     bool isResolved() const { return resolved_; }
+
+    /**
+     * Re-arms after a deferred install.
+     *
+     * <p>A tick can decide {@code Install} while the install body is not yet able to run (the
+     * launcher has not delivered the signature rules). Without this the gate stays resolved and
+     * every later tick reports {@code Wait}, so the hooks never install even once the rules arrive
+     * - the deferred install would be lost for the whole session. Re-arming schedules another
+     * attempt and counts it, so a runtime that never delivers the rules still gives up eventually
+     * rather than retrying forever.
+     *
+     * @param nowMs the monotonic time to re-arm at
+     * @return the number of deferred re-arms so far
+     */
+    int defer(long long nowMs) {
+        startedMs_ = nowMs;
+        resolved_ = false;
+        return ++deferredCount_;
+    }
+
+    /** How many times the install was deferred and re-armed. */
+    int deferredCount() const { return deferredCount_; }
 
     /** The number of frame ticks observed so far (diagnostics). */
     int frameTicks() const { return frameTicks_; }
@@ -80,6 +106,7 @@ public:
 private:
     long long startedMs_ = 0;
     int frameTicks_ = 0;
+    int deferredCount_ = 0;
     bool resolved_ = false;
 };
 

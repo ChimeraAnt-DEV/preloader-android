@@ -289,12 +289,26 @@ bool PumpGameHookInstall() {
     return false;
   }
 
-  // Install path. InitGameHooks defers (returns without consuming the once) when the signature
-  // rules have not been delivered yet, so a later frame tick retries; it is not a permanent skip.
+  // Install path. InitGameHooks defers when the signature rules have not been delivered yet; a
+  // deferral is not a permanent skip, so the gate is re-armed to schedule another attempt. Without
+  // the re-arm the gate would already be resolved and every later tick would report Wait, losing the
+  // install for the whole session even after the rules arrived (item 4).
   preloaderLogger.info("Preloader hook install running after {} frame tick(s)",
                        g_installGate.frameTicks());
   InitGameHooks();
-  return GameHookInstallResolved();
+  if (GameHookInstallResolved()) return true;
+  if (g_installGate.deferredCount() >= HookInstallGate::kMaxDefers) {
+    g_installResolved.store(true, std::memory_order_release);
+    preloaderLogger.warn(
+        "Preloader hook install deferred {} times; the signature rules never arrived, leaving the "
+        "game unpatched", g_installGate.deferredCount());
+    return true;
+  }
+  g_installGate.defer(nowMs);
+  preloaderLogger.warn(
+      "Preloader hook install deferred (signature rules not delivered yet); retrying on a later "
+      "frame tick");
+  return false;
 }
 
 bool GameHookInstallResolved() { return g_installResolved.load(std::memory_order_acquire); }
