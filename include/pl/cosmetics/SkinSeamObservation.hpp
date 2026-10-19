@@ -36,12 +36,19 @@ enum class SkinSeamStage {
     JoinHookAbsent,
     /** The join hook is installed but has not seen a join yet. */
     JoinHookIdle,
-    /** Joins were observed; the payload fields themselves are not readable in this build. */
-    JoinObserved,
+    /** Joins were observed but no skin image was built; the drop is at or before step 2. */
+    JoinObservedNoImage,
+    /** Joins were observed and skin images were built; the drop, if any, is downstream. */
+    JoinObservedWithImage,
 };
 
 /**
  * @brief Classifies the seam counters into a stage and a one-line explanation.
+ *
+ * <p>This is the triage order the Phase 6 finding describes, made mechanical: the join hook proves
+ * step 1 was reached, and the image-loader count proves step 2 (the engine built a skin image).
+ * Both counters are reach counters, so the classifier can place the drop between the steps without
+ * reading a payload it cannot read.
  *
  * @param packetHookInstalled whether the player-join detour installed
  * @param packetCalls         join-packet calls the detour forwarded
@@ -55,9 +62,13 @@ inline SkinSeamStage ClassifySkinSeam(bool packetHookInstalled, std::uint32_t pa
                                       bool skinCaptured) {
     (void) textureHookInstalled;
     (void) textureCalls;
-    (void) skinCaptured;
     if (!packetHookInstalled) return SkinSeamStage::JoinHookAbsent;
-    return packetCalls == 0U ? SkinSeamStage::JoinHookIdle : SkinSeamStage::JoinObserved;
+    if (packetCalls == 0U) return SkinSeamStage::JoinHookIdle;
+    // The engine builds a skin image through the loader on every skin it applies; a captured
+    // base-skin upload is the positive evidence that step 2 ran. A join observed without one means
+    // no skin image was built this session, so the drop is at or before step 2.
+    return skinCaptured ? SkinSeamStage::JoinObservedWithImage
+                        : SkinSeamStage::JoinObservedNoImage;
 }
 
 /**
@@ -72,9 +83,12 @@ inline const char *DescribeSkinSeam(SkinSeamStage stage) {
             return "the join-packet hook is not installed, so nothing was observed (unproven)";
         case SkinSeamStage::JoinHookIdle:
             return "the join-packet hook is installed but has seen no join yet";
-        case SkinSeamStage::JoinObserved:
-            return "joins observed; the payload's skin fields are not readable in this build, so "
-                   "whether the client sent the skin is still unproven";
+        case SkinSeamStage::JoinObservedNoImage:
+            return "joins observed but no skin image was built this session, so the drop is at or "
+                   "before the image-loader step (step 2)";
+        case SkinSeamStage::JoinObservedWithImage:
+            return "joins observed and skin images were built, so the drop (if any) is downstream "
+                   "of the image loader; the payload's skin fields are still not readable here";
     }
     return "unknown";
 }

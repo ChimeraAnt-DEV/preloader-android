@@ -30,25 +30,39 @@ int main() {
   expect(ClassifySkinSeam(true, 0, true, 100, true) == SkinSeamStage::JoinHookIdle,
          "installed with no calls -> idle");
 
-  // Joins observed: the furthest this build can prove.
-  expect(ClassifySkinSeam(true, 1, false, 0, false) == SkinSeamStage::JoinObserved,
-         "one join -> observed");
-  expect(ClassifySkinSeam(true, 1000, true, 5, true) == SkinSeamStage::JoinObserved,
-         "many joins -> observed");
+  // Joins observed but no skin image built: the drop is at or before the image-loader step.
+  expect(ClassifySkinSeam(true, 1, false, 0, false) == SkinSeamStage::JoinObservedNoImage,
+         "one join, no image -> drop at/before step 2");
+  expect(ClassifySkinSeam(true, 1000, false, 5, false) == SkinSeamStage::JoinObservedNoImage,
+         "many joins, no captured image -> drop at/before step 2");
 
-  // Every stage has a distinct, non-empty line, and the observed line states the limitation rather
+  // Joins observed and a skin image was built: the drop, if any, is downstream.
+  expect(ClassifySkinSeam(true, 1000, true, 5, true) == SkinSeamStage::JoinObservedWithImage,
+         "joins + captured image -> drop downstream");
+  expect(ClassifySkinSeam(true, 1, false, 0, true) == SkinSeamStage::JoinObservedWithImage,
+         "a captured image without the texture hook still proves step 2");
+
+  // Every stage has a distinct, non-empty line, and the observed lines state the limitation rather
   // than claiming the skin was sent.
   const char *absent = DescribeSkinSeam(SkinSeamStage::JoinHookAbsent);
   const char *idle = DescribeSkinSeam(SkinSeamStage::JoinHookIdle);
-  const char *observed = DescribeSkinSeam(SkinSeamStage::JoinObserved);
+  const char *noImage = DescribeSkinSeam(SkinSeamStage::JoinObservedNoImage);
+  const char *withImage = DescribeSkinSeam(SkinSeamStage::JoinObservedWithImage);
   expect(absent != nullptr && absent[0] != '\0', "absent line is non-empty");
   expect(idle != nullptr && idle[0] != '\0', "idle line is non-empty");
-  expect(observed != nullptr && observed[0] != '\0', "observed line is non-empty");
-  expect(absent != idle && idle != observed && absent != observed, "lines are distinct");
+  expect(noImage != nullptr && noImage[0] != '\0', "no-image line is non-empty");
+  expect(withImage != nullptr && withImage[0] != '\0', "with-image line is non-empty");
+  expect(absent != idle && idle != noImage && noImage != withImage && absent != withImage,
+         "lines are distinct");
   {
-    std::string line(observed);
-    expect(line.find("unproven") != std::string::npos,
-           "the observed line states the payload is unproven");
+    std::string line(noImage);
+    expect(line.find("step 2") != std::string::npos,
+           "the no-image line names the image-loader step");
+  }
+  {
+    std::string line(withImage);
+    expect(line.find("downstream") != std::string::npos,
+           "the with-image line places the drop downstream");
   }
   {
     std::string line(absent);
