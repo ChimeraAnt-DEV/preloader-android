@@ -14,6 +14,7 @@
 #include <string>
 
 #include "pl/runtime/GameHookRuleMerge.hpp"
+#include "pl/runtime/RuleProbe.hpp"
 #include <nlohmann/json.hpp>
 
 using nlohmann::json;
@@ -102,6 +103,41 @@ int main() {
     auto merged = MergeHookRuleForVersion(bad, "1.26.33.1");
     expect(merged.has_value(), "matches");
     expect(!merged->contains("playerRenderVtableIndex"), "no slot when no matching rule carries one");
+  }
+
+  // A probes block must survive the merge. Dropping it made a probe-backed rule look like a legacy
+  // one, which EvaluateFeatureGate then trusts on the slot index alone - the unprobed index item 17
+  // exists to refuse.
+  {
+    json root2 = json::object();
+    root2["revision"] = 6;
+    json rules = json::array();
+    json wide = rule("1.26.30.00", nullptr, 17, false);
+    json narrow = rule("1.21.132", "1.26.39.99", 17, false);
+    narrow["probes"] = json::object();
+    narrow["probes"]["playerRenderVtableIndex"] = json{{"resolved", true}};
+    rules.push_back(wide);
+    rules.push_back(narrow);
+    root2["rules"] = rules;
+    auto merged = MergeHookRuleForVersion(root2, "1.26.33.1");
+    expect(merged.has_value(), "probe rule matches");
+    expect(merged->contains("probes"), "the probes block survives the merge");
+    expect((*merged)["probes"]["playerRenderVtableIndex"]["resolved"].get<bool>(),
+           "the probe's resolved flag survives");
+    // And the gate now honours it: a declared slot whose probe did not resolve stays off.
+    json failed = json::object();
+    failed["revision"] = 6;
+    json failedRules = json::array();
+    json probeRule = rule("1.26.30.00", nullptr, 17, false);
+    probeRule["probes"] = json::object();
+    probeRule["probes"]["playerRenderVtableIndex"] = json{{"resolved", false}};
+    failedRules.push_back(probeRule);
+    failed["rules"] = failedRules;
+    auto failedMerged = MergeHookRuleForVersion(failed, "1.26.33.1");
+    expect(failedMerged.has_value(), "failed-probe rule matches");
+    expect(pl::runtime::EvaluateFeatureGate(*failedMerged, pl::runtime::HookFeature::PlayerRender)
+               == pl::runtime::FeatureGate::ProbeUnresolved,
+           "a merged rule with a failed probe leaves the feature off");
   }
 
   std::printf("GameHookRuleMergeTest: %d checks passed\n", checks);

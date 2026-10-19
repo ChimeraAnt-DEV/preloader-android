@@ -209,6 +209,30 @@ Java_org_chimeramc_client_preloader_PreloaderInput_nativeReadCosmeticsStats(JNIE
   return out;
 }
 
+// Item 3: the skin-path seam observation. Returns {stage, packetHookInstalled, packetCalls,
+// textureCalls, skinCaptured}. The stage is the honest classification: the payload fields are not
+// readable in this build, so the report names the stage reached, not a skin id it never read.
+JNIEXPORT jintArray JNICALL
+Java_org_chimeramc_client_preloader_PreloaderInput_nativeReadSkinSeam(JNIEnv *env, jclass) {
+  std::uint32_t seam[5] = {0, 0, 0, 0, 0};
+  if (!pl::runtime::ReadSkinSeam(seam)) return nullptr;
+  jint values[5];
+  for (int i = 0; i < 5; ++i) values[i] = static_cast<jint>(seam[i]);
+  jintArray out = env->NewIntArray(5);
+  if (out == nullptr) return nullptr;
+  env->SetIntArrayRegion(out, 0, 5, values);
+  return out;
+}
+
+// The one-line explanation for a stage, so the wording lives in one place (the native rule) and the
+// launcher does not paraphrase it.
+JNIEXPORT jstring JNICALL
+Java_org_chimeramc_client_preloader_PreloaderInput_nativeDescribeSkinSeam(JNIEnv *env, jclass,
+                                                                         jint stage) {
+  const char *text = pl::runtime::DescribeSkinSeamStage(static_cast<std::uint32_t>(stage));
+  return env->NewStringUTF(text == nullptr ? "" : text);
+}
+
 // ---------------------------------------------------------------------------------------------
 // The mce::Image pipeline surface
 //
@@ -373,6 +397,42 @@ Java_org_chimeramc_client_preloader_PreloaderInput_nativeReadRenderDiagnostics(J
   jintArray out = env->NewIntArray(kFields);
   if (out == nullptr) return nullptr;
   env->SetIntArrayRegion(out, 0, kFields, values);
+  return out;
+}
+
+// Item 18: the exact gate that refused the render hook (0 = live, 1 = version gate, 2 = slot
+// unresolved, 3 = not executable, 4 = hook() failed), so the diagnostics report names the failure.
+JNIEXPORT jint JNICALL
+Java_org_chimeramc_client_preloader_PreloaderInput_nativeRenderHookFailureReason(JNIEnv *, jclass) {
+  return static_cast<jint>(pl::runtime::RenderHookFailureReason());
+}
+
+// Item 11: the display refresh rate the launcher resolved, so the frame-pacing reading can decide
+// whether the render thread is vsync-locked. 0 means unknown.
+JNIEXPORT void JNICALL
+Java_org_chimeramc_client_preloader_PreloaderInput_nativeSetDisplayRefreshHz(JNIEnv *, jclass,
+                                                                             jint hz) {
+  pl::runtime::SetDisplayRefreshHz(static_cast<int>(hz));
+}
+
+// Item 11: the render-thread frame-pacing reading, as {valid, averageUs, worstUs, flags} where
+// flags bit0 = jittering, bit1 = vsync-locked. A short array (length 1) means "no reading yet".
+JNIEXPORT jintArray JNICALL
+Java_org_chimeramc_client_preloader_PreloaderInput_nativeReadFramePacing(JNIEnv *env, jclass) {
+  long long averageUs = 0;
+  long long worstUs = 0;
+  bool jittering = false;
+  bool vsyncLocked = false;
+  const bool valid =
+      pl::runtime::ReadFramePacing(averageUs, worstUs, jittering, vsyncLocked);
+  jint values[4];
+  values[0] = valid ? 1 : 0;
+  values[1] = valid ? static_cast<jint>(averageUs) : -1;
+  values[2] = valid ? static_cast<jint>(worstUs) : -1;
+  values[3] = (jittering ? 1 : 0) | (vsyncLocked ? 2 : 0);
+  jintArray out = env->NewIntArray(4);
+  if (out == nullptr) return nullptr;
+  env->SetIntArrayRegion(out, 0, 4, values);
   return out;
 }
 

@@ -1,3 +1,4 @@
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <set>
@@ -8,8 +9,25 @@
 #include "pl/Logger.hpp"
 #include "pl/memory/Hook.hpp"
 #include "pl/memory/HookTarget.hpp"
+#include "pl/memory/PrologueVerify.hpp"
 
 namespace pl::memory {
+
+namespace {
+
+// The post-install prologue read-back rule lives in PrologueVerify.hpp so it is host-testable.
+// This wrapper does the (unsafe) read and hands the first instruction to the pure classifier.
+bool VerifyPatchedPrologue(FuncPtr target, std::string_view name) {
+  (void)name;
+  if (target == nullptr) return false;
+  // Volatile read: the mapping is executable but may not be cache-coherent with the writer yet; a
+  // plain load can be reordered or elided by an optimizing build.
+  const volatile std::uint32_t *word =
+      reinterpret_cast<const volatile std::uint32_t *>(target);
+  return ClassifyPrologue(*word) == PrologueVerdict::Patched;
+}
+
+} // namespace
 
 struct HookElement {
   FuncPtr detour{};
@@ -135,6 +153,21 @@ int hook(FuncPtr target, FuncPtr detour, FuncPtr *original,
                              reinterpret_cast<void **>(&h->origin));
   if (!h->glossHandle) {
     preloaderLogger.error("hook({}): GlossHook install failed at {}", name, target);
+    return -1;
+  }
+
+  // Item 7: confirm the jump is actually in place. Read back the first instruction at the target
+  // and check it is a real branch, not the unpatched original or a NOP. This catches a hook backend
+  // that reported success but wrote nothing (or wrote to the wrong address). A failed check is not
+  // merely logged: the install is backed out, because a half-patched entry is worse than no hook
+  // (the game would call a trampoline whose prologue was never rewritten) and the caller must see a
+  // failure so it fails closed.
+  if (!VerifyPatchedPrologue(target, name)) {
+    preloaderLogger.error(
+        "hook({}): patched-prologue verification FAILED at {}; backing the install out", name,
+        target);
+    GlossHookDelete(h->glossHandle);
+    h->glossHandle = nullptr;
     return -1;
   }
 

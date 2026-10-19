@@ -34,6 +34,7 @@ std::once_flag g_armOnce;
 HookInstallGate g_installGate;
 std::atomic_bool g_installArmed{false};
 std::atomic_bool g_installResolved{false};
+std::atomic_int g_installGiveUps{0};
 
 long long MonotonicMs() {
   timespec ts{};
@@ -149,20 +150,20 @@ void ConfigureGameHooks(std::string rulesPath, std::string minecraftVersion) {
 }
 
 void InitGameHooks() {
+  // Rules gate BEFORE the once, deliberately: if the launcher has not delivered the signature
+  // rules yet (the library was loaded after the rules call, a stale build, or a different
+  // process), install nothing AND do not consume the once. A later PumpGameHookInstall after
+  // delivery then gets a clean attempt instead of permanently skipping cosmetics for the session.
+  if (!GameHookRulesConfigured()) {
+    preloaderLogger.warn(
+        "Preloader signature rules were not delivered; deferring hook install (will retry "
+        "when they arrive)");
+    return;
+  }
+
   std::call_once(g_gameHooksOnce, [] {
     g_installResolved.store(true, std::memory_order_release);
     g_forceGlobalModMenu.store(false, std::memory_order_relaxed);
-    // Hard guard: never install a detour against an unresolved address. When the launcher has
-    // not delivered the signature rules -- the library was loaded after the rules call, a stale
-    // build, or a different process -- there is no verified target, and installing anyway faults
-    // on the render thread (SIGSEGV right after "Start hook linker"). Fail safe to a vanilla
-    // launch instead. This is checked before every hook below, including the local-player feed.
-    if (!GameHookRulesConfigured()) {
-      preloaderLogger.warn(
-          "Preloader signature rules were not delivered; refusing to install hooks and "
-          "launching vanilla");
-      return;
-    }
 
     // The local-player feed is independent of the pause/HUD hooks and is useful on
     // its own (the voice nametag icons), so it is installed even when the overlay
@@ -252,27 +253,62 @@ void ArmGameHookInstall() {
   });
 }
 
+namespace {
+// How many give-ups are tolerated before the install is marked resolved permanently. The gate's
+// kGiveUpMs is a safety net for a stuck loading screen; a handful of retries with a backoff covers
+// a runtime that starts slowly (or rules that arrive late) without spinning forever.
+constexpr int kMaxGiveUps = 3;
+constexpr long long kGiveUpBackoffMs = 5'000;
+} // namespace
+
 bool PumpGameHookInstall() {
   if (g_installResolved.load(std::memory_order_acquire)) return true;
   if (!g_installArmed.load(std::memory_order_acquire)) return false;
 
-  const InstallDecision decision = g_installGate.tick(MonotonicMs());
+  const long long nowMs = MonotonicMs();
+  const InstallDecision decision = g_installGate.tick(nowMs);
   if (decision == InstallDecision::Wait) return false;
 
   if (decision == InstallDecision::GiveUp) {
-    // The runtime never came up within the budget. Mark it resolved so the state is not left
-    // "pending" forever, and leave the game vanilla rather than patching something half-mapped.
-    g_installResolved.store(true, std::memory_order_release);
+    // The runtime did not come up within the gate's budget. Retry after a backoff instead of
+    // giving up permanently: a slow start, or signature rules delivered after the library was
+    // loaded, can be resolved by a later attempt. Only after kMaxGiveUps is the state sealed,
+    // leaving the game vanilla rather than patching something half-mapped.
+    if (g_installGiveUps.fetch_add(1, std::memory_order_relaxed) + 1 >= kMaxGiveUps) {
+      g_installResolved.store(true, std::memory_order_release);
+      preloaderLogger.warn(
+          "Preloader hook install gave up after {} attempts; the runtime did not come up",
+          g_installGiveUps.load(std::memory_order_relaxed));
+      return true;
+    }
+    g_installGate.start(nowMs + kGiveUpBackoffMs);
     preloaderLogger.warn(
-        "Preloader hook install gave up after {} frame ticks; the runtime did not come up",
-        g_installGate.frameTicks());
-    return true;
+        "Preloader hook install wait exceeded the gate budget after {} frame tick(s); retrying in "
+        "{}ms",
+        g_installGate.frameTicks(), kGiveUpBackoffMs);
+    return false;
   }
 
+  // Install path. InitGameHooks defers when the signature rules have not been delivered yet; a
+  // deferral is not a permanent skip, so the gate is re-armed to schedule another attempt. Without
+  // the re-arm the gate would already be resolved and every later tick would report Wait, losing the
+  // install for the whole session even after the rules arrived (item 4).
   preloaderLogger.info("Preloader hook install running after {} frame tick(s)",
                        g_installGate.frameTicks());
   InitGameHooks();
-  return true;
+  if (GameHookInstallResolved()) return true;
+  if (g_installGate.deferredCount() >= HookInstallGate::kMaxDefers) {
+    g_installResolved.store(true, std::memory_order_release);
+    preloaderLogger.warn(
+        "Preloader hook install deferred {} times; the signature rules never arrived, leaving the "
+        "game unpatched", g_installGate.deferredCount());
+    return true;
+  }
+  g_installGate.defer(nowMs);
+  preloaderLogger.warn(
+      "Preloader hook install deferred (signature rules not delivered yet); retrying on a later "
+      "frame tick");
+  return false;
 }
 
 bool GameHookInstallResolved() { return g_installResolved.load(std::memory_order_acquire); }

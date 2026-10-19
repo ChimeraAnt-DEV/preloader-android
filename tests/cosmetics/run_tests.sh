@@ -86,6 +86,23 @@ compile_run SnapshotChannelTest \
 compile_run GameHookRuleMergeTest \
   "$here/GameHookRuleMergeTest.cpp"
 
+compile_run RuleProbeTest \
+  "$here/RuleProbeTest.cpp"
+
+compile_run FramePacingTest \
+  "$here/FramePacingTest.cpp"
+
+compile_run PrologueVerifyTest \
+  "$here/PrologueVerifyTest.cpp"
+
+compile_run OptifineConfigBoundsTest \
+  -I"$root/src" \
+  "$root/src/pl/runtime/OptifineConfig.cpp" \
+  "$here/OptifineConfigBoundsTest.cpp"
+
+compile_run SkinSeamObservationTest \
+  "$here/SkinSeamObservationTest.cpp"
+
 compile_run ModuleMapTest \
   "$root/src/pl/runtime/ModuleMap.cpp" \
   "$here/ModuleMapTest.cpp"

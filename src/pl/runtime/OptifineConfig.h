@@ -18,6 +18,24 @@ namespace pl::runtime {
 constexpr int kOptifineItemCount = 9;
 
 /**
+ * @brief Bounds on the launcher's config blob (item 20).
+ *
+ * The blob crosses a JNI boundary from the launcher, so a buggy or hostile build could hand the
+ * preloader a multi-megabyte string, a million keys or a single kilobyte key. The parser stores
+ * every key in a map, so an unbounded blob is unbounded memory. These caps are generous for the
+ * real blob (9 items x 3 keys plus the master switch is 28 keys, well under 1 KiB) and a blob past
+ * them is parsed up to the limit and then ignored, never rejected outright - the launcher and the
+ * preloader must stay compatible if one side adds a key.
+ */
+constexpr std::size_t kOptifineMaxBlobBytes = 16U * 1024U;
+/** The most keys the parser will store; later keys are ignored. */
+constexpr std::size_t kOptifineMaxKeys = 128U;
+/** A key longer than this is skipped rather than stored. */
+constexpr std::size_t kOptifineMaxKeyLength = 64U;
+/** A value longer than this is truncated before it is stored. */
+constexpr std::size_t kOptifineMaxValueLength = 256U;
+
+/**
  * @brief The stable id string for an item index, used in the config blob and by the launcher.
  * Returns "unknown" for an out-of-range index. Never renumber an existing id.
  */

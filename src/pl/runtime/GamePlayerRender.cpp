@@ -13,6 +13,7 @@
 #include "pl/memory/Hook.hpp"
 #include "pl/memory/Signature.hpp"
 #include "pl/memory/Vtable.hpp"
+#include "pl/render/FramePacing.hpp"
 #include "pl/render/RenderDispatch.h"
 #include "pl/runtime/GameHookRules.h"
 
@@ -65,6 +66,11 @@ std::atomic<std::size_t> g_resolvedSlot{0};
 std::atomic_bool g_resolvedByString{false};
 std::atomic_bool g_slotKnown{false};
 
+// Item 18 (preloader update list): the exact gate that refused the render hook, so the diagnostics
+// report names "version outside the verified range" rather than a generic "unavailable". 0 = no
+// failure (installed or still pending).
+std::atomic_int g_renderFailureReason{0};
+
 // The single post-render seam. A fixed small table so registration allocates nothing and the
 // render thread never locks. At most 4 consumers (cosmetics + future mods).
 constexpr std::size_t kMaxPostRenderCallbacks = 4;
@@ -76,6 +82,21 @@ long long MonotonicMs() {
   clock_gettime(CLOCK_MONOTONIC, &ts);
   return static_cast<long long>(ts.tv_sec) * 1000LL + ts.tv_nsec / 1000000LL;
 }
+
+long long MonotonicUs() {
+  timespec ts{};
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return static_cast<long long>(ts.tv_sec) * 1000000LL + ts.tv_nsec / 1000LL;
+}
+
+// Item 11: the render thread's own frame-time reading. Fed from the render tick below and read by
+// the diagnostics; it measures and reports only, it does not reschedule the engine's frame
+// submission (that needs the engine's swap/present call, which the stripped binary does not expose).
+pl::render::FramePacingAnalyzer g_framePacing;
+std::atomic<int> g_displayRefreshHz{0};
+std::atomic<long long> g_framePacingAverageUs{0};
+std::atomic<long long> g_framePacingWorstUs{0};
+std::atomic<int> g_framePacingFlags{0}; // bit0 jittering, bit1 vsync-locked
 
 // The detour. It runs on the render thread, once per rendered player model. It records the
 // tick and call counts, forwards every argument unchanged, then runs the registered post-render
@@ -101,6 +122,20 @@ void HookRender(void *a, void *b, void *c, void *d, void *e, void *f, void *g, v
   }
   g_totalCalls.fetch_add(1, std::memory_order_relaxed);
   g_lastRenderMs.store(now, std::memory_order_relaxed);
+
+  // Item 11: feed the frame-time analyzer. The render entry runs once per rendered player model, so
+  // a 3ms floor collapses several draws inside one frame to a single sample; the reading is then the
+  // real frame interval. The analyzer is plain (render-thread only); the snapshot is atomics.
+  {
+    const pl::render::FramePacingReading pacing =
+        g_framePacing.onFrame(MonotonicUs(), g_displayRefreshHz.load(std::memory_order_relaxed), 3000);
+    g_framePacingAverageUs.store(pacing.averageFrameUs, std::memory_order_relaxed);
+    g_framePacingWorstUs.store(pacing.worstFrameUs, std::memory_order_relaxed);
+    int flags = 0;
+    if (pacing.jittering) flags |= 1;
+    if (pacing.vsyncLocked) flags |= 2;
+    g_framePacingFlags.store(flags, std::memory_order_relaxed);
+  }
 
   // Publish a self-contained frame record for off-thread consumers. The render thread does only this
   // bounded seqlock write (no lock, no allocation); the consumer reads a consistent copy elsewhere.
@@ -149,13 +184,31 @@ void InitPlayerRenderSource(std::size_t vtableIndex) {
     return;
   }
 
-  // Only the builds whose slot index is verified may be hooked. An unverified build fails safe
-  // to the resource-pack path rather than installing a detour on an unrelated slot.
-  if (!MatchesConfiguredVersion(kVerifiedMinVersion, kVerifiedMaxVersion)) {
+  // Item 18: record exactly which gate refused the hook. 0 means the hook is live (or a refusal
+  // reason that predates the field, which prints as "unknown" on the Java side).
+  auto refuse = [](int reason) {
+    g_renderFailureReason.store(reason, std::memory_order_relaxed);
+  };
+  constexpr int kReasonVersionGate = 1;
+  constexpr int kReasonSlotUnresolved = 2;
+  constexpr int kReasonNotExecutable = 3;
+  constexpr int kReasonHookFailed = 4;
+  // Item 17: the matching rule declares a render slot but its probe did not resolve the seam to
+  // executable code (or the probes block omits it). A probe-backed rule is authoritative, so the
+  // feature stays off rather than detouring an unverified index.
+  constexpr int kReasonProbeGate = 5;
+
+  // Probe-backed rule gate (item 17). Runs before the version check so a rule that carries a
+  // failing probe reports that exact reason instead of the generic version-gate one. A rule with
+  // no probes block (a legacy/hand-derived rule) passes here and keeps its old behaviour.
+  const FeatureGate gate =
+      pl::runtime::EvaluateConfiguredFeatureGate(pl::runtime::HookFeature::PlayerRender);
+  if (gate == FeatureGate::ProbeUnresolved || gate == FeatureGate::ProbeMissing) {
+    refuse(kReasonProbeGate);
     preloaderLogger.warn(
-        "Player-render feed: running build is outside the verified range {}-{}; native "
-        "cosmetics stay on the resource-pack path",
-        kVerifiedMinVersion, kVerifiedMaxVersion);
+        "Player-render feed: the matching rule's probe for the render seam did not resolve ({}); "
+        "native cosmetics stay on the resource-pack path",
+        pl::runtime::FeatureGateLabel(gate));
     return;
   }
 
@@ -164,16 +217,33 @@ void InitPlayerRenderSource(std::size_t vtableIndex) {
   // nothing (verified: the render diagnostic is not referenced by any LivePlayerRenderer vtable
   // slot on 26.52, so the scan correctly declines there), fall back to the configured index and
   // then the default.
+  //
+  // Item 6: the version gate guards only the fallback. A successful live probe (the slot's body
+  // references the render diagnostic, and the address is executable) is stronger evidence than the
+  // version string, so it installs on any build without a per-build rule. The version floor then
+  // only applies to the weaker configured-index path, where a stale index is the risk.
   std::size_t resolvedSlot = 0;
   std::uintptr_t renderFn = pl::memory::resolveVtableSlotReferencingString(
       "18LivePlayerRenderer", "variable.player_x_rotation", kGameModule, 200, &resolvedSlot);
   std::size_t slot = resolvedSlot;
   bool byString = renderFn != 0;
   if (!renderFn) {
+    // Fallback path: only the builds whose slot index is verified may be hooked. An unverified
+    // build fails safe to the resource-pack path rather than installing a detour on an unrelated
+    // slot.
+    if (!MatchesConfiguredVersion(kVerifiedMinVersion, kVerifiedMaxVersion)) {
+      refuse(kReasonVersionGate);
+      preloaderLogger.warn(
+          "Player-render feed: running build is outside the verified range {}-{} and the live "
+          "probe found no render slot; native cosmetics stay on the resource-pack path",
+          kVerifiedMinVersion, kVerifiedMaxVersion);
+      return;
+    }
     slot = vtableIndex != 0 ? vtableIndex : kDefaultRenderSlot;
     renderFn = pl::memory::resolveVtableFunction("18LivePlayerRenderer", slot, kGameModule);
   }
   if (!renderFn) {
+    refuse(kReasonSlotUnresolved);
     preloaderLogger.warn(
         "Player-render feed: LivePlayerRenderer slot unresolved; native cosmetics "
         "stay on the resource-pack path");
@@ -183,6 +253,7 @@ void InitPlayerRenderSource(std::size_t vtableIndex) {
   // stale index can land on a data pointer. Refuse to detour anything that is not executable code,
   // so the widened version gate cannot turn a wrong slot into a render-thread fault.
   if (!pl::memory::isExecutableAddress(renderFn, kGameModule)) {
+    refuse(kReasonNotExecutable);
     preloaderLogger.warn(
         "Player-render feed: LivePlayerRenderer slot {} did not resolve to executable code; "
         "skipping the hook",
@@ -195,16 +266,38 @@ void InitPlayerRenderSource(std::size_t vtableIndex) {
                        reinterpret_cast<pl::memory::FuncPtr *>(&g_origRender),
                        pl::memory::HookPriority::Normal,
                        "LivePlayerRenderer::render") != 0) {
+    refuse(kReasonHookFailed);
     preloaderLogger.warn(
         "Player-render feed: hook install failed; native cosmetics stay on the "
         "resource-pack path");
   } else {
     preloaderLogger.info("Player-render feed: LivePlayerRenderer::render hooked (slot {})",
                          slot);
+    g_renderFailureReason.store(0, std::memory_order_relaxed);
     g_resolvedSlot.store(slot, std::memory_order_relaxed);
     g_resolvedByString.store(byString, std::memory_order_relaxed);
     g_slotKnown.store(true, std::memory_order_relaxed);
   }
+}
+
+int RenderHookFailureReason() {
+  return g_renderFailureReason.load(std::memory_order_relaxed);
+}
+
+void SetDisplayRefreshHz(int hz) {
+  g_displayRefreshHz.store(hz > 0 ? hz : 0, std::memory_order_relaxed);
+}
+
+bool ReadFramePacing(long long &outAverageUs, long long &outWorstUs, bool &outJittering,
+                     bool &outVsyncLocked) {
+  const long long average = g_framePacingAverageUs.load(std::memory_order_relaxed);
+  if (average <= 0) return false;
+  outAverageUs = average;
+  outWorstUs = g_framePacingWorstUs.load(std::memory_order_relaxed);
+  const int flags = g_framePacingFlags.load(std::memory_order_relaxed);
+  outJittering = (flags & 1) != 0;
+  outVsyncLocked = (flags & 2) != 0;
+  return true;
 }
 
 bool LastResolvedRenderSlot(std::size_t &outSlot, bool &outByString) {
