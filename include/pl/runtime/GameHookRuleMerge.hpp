@@ -134,6 +134,21 @@ inline std::optional<nlohmann::json> MergeHookRuleForVersion(const nlohmann::jso
     if (!merged.contains("max") && rule.contains("max") && rule["max"].is_string()) {
       merged["max"] = rule["max"];
     }
+    // The probes block must survive the merge. Dropping it turned a probe-backed rule into a
+    // legacy one, which EvaluateFeatureGate then trusts on the strength of its slot index alone -
+    // exactly the unprobed index item 17 exists to refuse. Each seam is taken first-wins, like the
+    // index keys.
+    auto probesIt = rule.find("probes");
+    if (probesIt != rule.end() && probesIt->is_object()) {
+      if (!merged.contains("probes") || !merged["probes"].is_object()) {
+        merged["probes"] = nlohmann::json::object();
+      }
+      for (auto probe = probesIt->begin(); probe != probesIt->end(); ++probe) {
+        if (!merged["probes"].contains(probe.key())) {
+          merged["probes"][probe.key()] = probe.value();
+        }
+      }
+    }
   }
 
   if (!matched) {
