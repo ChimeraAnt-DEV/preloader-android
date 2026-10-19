@@ -92,6 +92,9 @@ compile_run RuleProbeTest \
 compile_run FramePacingTest \
   "$here/FramePacingTest.cpp"
 
+compile_run PrologueVerifyTest \
+  "$here/PrologueVerifyTest.cpp"
+
 compile_run OptifineConfigBoundsTest \
   -I"$root/src" \
   "$root/src/pl/runtime/OptifineConfig.cpp" \

@@ -9,51 +9,22 @@
 #include "pl/Logger.hpp"
 #include "pl/memory/Hook.hpp"
 #include "pl/memory/HookTarget.hpp"
+#include "pl/memory/PrologueVerify.hpp"
 
 namespace pl::memory {
 
 namespace {
 
-// AArch64 instruction-class helpers for the post-install prologue read-back (item 7). The exact
-// encodings GlossHook emits vary (an absolute jump is `LDR X18, #8; BR X18; <dest>`, an in-range
-// jump is a plain `B`), so the check is deliberately broad: the first instruction must look like a
-// branch-family opcode for the patch to have taken.
-bool IsA64BranchLike(uint32_t insn) {
-  // B / BL (immediate).
-  if ((insn & 0xFC000000U) == 0x14000000U) return true;
-  // BR / BLR (register). RET is excluded (an unpatched function may be a leaf `ret`).
-  if ((insn & 0xFFFFFC1FU) == 0xD61F0000U) return true;
-  // B.cond.
-  if ((insn & 0xFF000010U) == 0x54000000U) return true;
-  // CBZ / CBNZ.
-  if ((insn & 0x7F000000U) == 0x34000000U) return true;
-  // TBZ / TBNZ.
-  if ((insn & 0x7F000000U) == 0x36000000U) return true;
-  // LDR (literal) — the `LDR X18, #8` GlossHook's absolute jump emits.
-  if ((insn & 0x3B000000U) == 0x18000000U) return true;
-  // ADRP — GlossHook's `MakeArm64AbsoluteJump32` prologue.
-  if ((insn & 0x9F000000U) == 0x90000000U) return true;
-  return false;
-}
-
-// Reads back the first instruction at a hooked target and confirms it looks redirection-containing
-// (item 7). Fail-closed: any read or decode problem reports false so the caller can decide whether
-// to back the install out.
+// The post-install prologue read-back rule lives in PrologueVerify.hpp so it is host-testable.
+// This wrapper does the (unsafe) read and hands the first instruction to the pure classifier.
 bool VerifyPatchedPrologue(FuncPtr target, std::string_view name) {
   (void)name;
   if (target == nullptr) return false;
-  std::uint32_t first = 0;
   // Volatile read: the mapping is executable but may not be cache-coherent with the writer yet; a
   // plain load can be reordered or elided by an optimizing build.
   const volatile std::uint32_t *word =
       reinterpret_cast<const volatile std::uint32_t *>(target);
-  first = *word;
-  if (IsA64BranchLike(first)) {
-    return true;
-  }
-  // A NOP at the entry means nothing was patched (GlossHook replaces the first instruction with a
-  // branch, not a NOP), so an all-NOP prologue is definitely a failed install.
-  return first != 0xD503201FU;
+  return ClassifyPrologue(*word) == PrologueVerdict::Patched;
 }
 
 } // namespace
@@ -187,11 +158,17 @@ int hook(FuncPtr target, FuncPtr detour, FuncPtr *original,
 
   // Item 7: confirm the jump is actually in place. Read back the first instruction at the target
   // and check it is a real branch, not the unpatched original or a NOP. This catches a hook backend
-  // that reported success but wrote nothing (or wrote to the wrong address).
+  // that reported success but wrote nothing (or wrote to the wrong address). A failed check is not
+  // merely logged: the install is backed out, because a half-patched entry is worse than no hook
+  // (the game would call a trampoline whose prologue was never rewritten) and the caller must see a
+  // failure so it fails closed.
   if (!VerifyPatchedPrologue(target, name)) {
     preloaderLogger.error(
-        "hook({}): patched-prologue verification FAILED at {}; the detour may not be live", name,
+        "hook({}): patched-prologue verification FAILED at {}; backing the install out", name,
         target);
+    GlossHookDelete(h->glossHandle);
+    h->glossHandle = nullptr;
+    return -1;
   }
 
   preloaderLogger.info(
