@@ -86,6 +86,9 @@ compile_run SnapshotChannelTest \
 compile_run GameHookRuleMergeTest \
   "$here/GameHookRuleMergeTest.cpp"
 
+compile_run RuleProbeTest \
+  "$here/RuleProbeTest.cpp"
+
 compile_run ModuleMapTest \
   "$root/src/pl/runtime/ModuleMap.cpp" \
   "$here/ModuleMapTest.cpp"

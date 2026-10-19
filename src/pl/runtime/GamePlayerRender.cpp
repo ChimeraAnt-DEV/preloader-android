@@ -163,6 +163,24 @@ void InitPlayerRenderSource(std::size_t vtableIndex) {
   constexpr int kReasonSlotUnresolved = 2;
   constexpr int kReasonNotExecutable = 3;
   constexpr int kReasonHookFailed = 4;
+  // Item 17: the matching rule declares a render slot but its probe did not resolve the seam to
+  // executable code (or the probes block omits it). A probe-backed rule is authoritative, so the
+  // feature stays off rather than detouring an unverified index.
+  constexpr int kReasonProbeGate = 5;
+
+  // Probe-backed rule gate (item 17). Runs before the version check so a rule that carries a
+  // failing probe reports that exact reason instead of the generic version-gate one. A rule with
+  // no probes block (a legacy/hand-derived rule) passes here and keeps its old behaviour.
+  const FeatureGate gate =
+      pl::runtime::EvaluateConfiguredFeatureGate(pl::runtime::HookFeature::PlayerRender);
+  if (gate == FeatureGate::ProbeUnresolved || gate == FeatureGate::ProbeMissing) {
+    refuse(kReasonProbeGate);
+    preloaderLogger.warn(
+        "Player-render feed: the matching rule's probe for the render seam did not resolve ({}); "
+        "native cosmetics stay on the resource-pack path",
+        pl::runtime::FeatureGateLabel(gate));
+    return;
+  }
 
   // Only the builds whose slot index is verified may be hooked. An unverified build fails safe
   // to the resource-pack path rather than installing a detour on an unrelated slot.

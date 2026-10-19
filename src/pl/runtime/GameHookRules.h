@@ -5,6 +5,8 @@
 #include <optional>
 #include <string>
 
+#include "pl/runtime/RuleProbe.hpp"
+
 namespace pl::runtime {
 
 struct GameHookSignatures {
@@ -89,5 +91,20 @@ bool GameHookRulesHaveRenderIndex();
 
 /** Diagnostics: a comma-separated list of the effective rule's resolved fields. */
 std::string GameHookRulesSummary();
+
+/**
+ * @brief Probe-backed feature gate (item 17): whether the matching rule both declares the slot and
+ *        carries a resolved probe for it.
+ *
+ * A generated rule (see `tools/gen_rules.py`) pins a slot index only when it probed the seam to
+ * executable code. A rule with a slot but no passing probe must leave the feature off, so a
+ * hand-derived or legacy rule cannot detour a stale slot on a build it was not derived from.
+ *
+ * @return the exact gate reason, for the diagnostics report and the install decision.
+ */
+pl::runtime::FeatureGate EvaluateConfiguredFeatureGate(pl::runtime::HookFeature feature);
+
+/** Diagnostics: the gate reason for the player-render feature, for the report (item 18). */
+int ConfiguredRenderGateReason();
 
 } // namespace pl::runtime

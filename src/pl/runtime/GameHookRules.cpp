@@ -16,6 +16,7 @@
 
 #include "pl/Logger.hpp"
 #include "pl/runtime/GameHookRuleMerge.hpp"
+#include "pl/runtime/RuleProbe.hpp"
 #include "pl/runtime/VersionCompare.hpp"
 
 namespace pl::runtime {
@@ -318,6 +319,45 @@ bool GameHookRulesHaveRenderIndex() {
 std::string GameHookRulesSummary() {
   std::lock_guard<std::mutex> lock(g_lastRuleSummaryMutex);
   return g_lastRuleSummary;
+}
+
+FeatureGate EvaluateConfiguredFeatureGate(HookFeature feature) {
+  std::string rulesPath;
+  std::string minecraftVersion;
+  {
+    std::lock_guard<std::mutex> lock(g_rulesMutex);
+    rulesPath = g_rulesPath;
+    minecraftVersion = g_minecraftVersion;
+  }
+
+  auto content = ReadTextFile(rulesPath);
+  if (!content) {
+    return FeatureGate::NoRuleSlot;
+  }
+
+  nlohmann::json root = nlohmann::json::parse(*content, nullptr, false);
+  if (root.is_discarded() || !root.is_object()) {
+    return FeatureGate::NoRuleSlot;
+  }
+
+  auto merged = MergeHookRuleForVersion(root, minecraftVersion);
+  if (!merged) {
+    return FeatureGate::NoRuleSlot;
+  }
+  return EvaluateFeatureGate(*merged, feature);
+}
+
+int ConfiguredRenderGateReason() {
+  // The report's numeric gate code mirrors the render hook's own refusal reasons where they
+  // overlap: 0 means the feature is enabled. A gate that leaves it off is reported as its own
+  // positive code so the report can name the exact link that broke.
+  switch (EvaluateConfiguredFeatureGate(HookFeature::PlayerRender)) {
+    case FeatureGate::Enabled: return 0;
+    case FeatureGate::NoRuleSlot: return 5;
+    case FeatureGate::ProbeMissing: return 6;
+    case FeatureGate::ProbeUnresolved: return 7;
+  }
+  return 8;
 }
 
 } // namespace pl::runtime
