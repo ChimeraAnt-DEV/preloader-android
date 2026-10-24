@@ -37,11 +37,56 @@ cxx="${CXX:-g++}"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
+# zlib headers. AntEggLoader reads egg.json straight out of the ZIP central directory with zlib's
+# raw inflate, so its host test needs the header and the library.
+#
+# The NDK sysroot's include dir must NOT go on the include path: it carries its own libc headers,
+# and pulling those in ahead of the host's breaks every other header (os_defines.h and friends
+# fail on undefined glibc feature macros). So the zlib headers are copied into a private include
+# dir of their own, which adds zlib.h without shadowing anything else.
+zlib_include=""
+zlib_source=""
+zlib_link=""
+for candidate in \
+    /usr/include \
+    "${ZLIB_INCLUDE:-}" \
+    "$(ls -d /opt/android-sdk/ndk/*/toolchains/llvm/prebuilt/*/sysroot/usr/include 2>/dev/null | head -1)" \
+    "$(ls -d /workspace/android-sdk/ndk/*/toolchains/llvm/prebuilt/*/sysroot/usr/include 2>/dev/null | head -1)" \
+    "$root/../libHttpClient/External/zlib"; do
+  if [[ -n "$candidate" && -f "$candidate/zlib.h" ]]; then
+    zlib_source="$candidate"
+    if [[ "$candidate" == "/usr/include" ]]; then
+      zlib_include="$candidate"
+    else
+      zlib_include="$work/zlib-include"
+      mkdir -p "$zlib_include"
+      cp "$candidate/zlib.h" "$zlib_include/"
+      [[ -f "$candidate/zconf.h" ]] && cp "$candidate/zconf.h" "$zlib_include/"
+    fi
+    break
+  fi
+done
+
+# Resolve the library to link. A distro often ships only the versioned soname (libz.so.1) with no
+# libz.so for `-lz`, so link the versioned file directly when that is all there is; the bundled
+# libHttpClient copy is source-only, so compile it in.
+if [[ "$zlib_source" == *libHttpClient* ]]; then
+  zlib_link="$zlib_source/zlib.c"
+else
+  zlib_link="-lz"
+  for lib in /usr/lib/*/libz.so /usr/lib/*/libz.a /usr/lib/*/libz.so.*; do
+    if [[ -e "$lib" ]]; then
+      zlib_link="$lib"
+      break
+    fi
+  done
+fi
+
 compile_run() {
   local name="$1"; shift
   echo "== $name =="
   "$cxx" -std=c++20 -O1 -g \
-    -I"$root/include" -I"$nlohmann" \
+    -I"$root/include" -I"$nlohmann" ${zlib_include:+-I"$zlib_include"} \
     "$@" -o "$work/$name"
   "$work/$name"
 }
@@ -106,5 +151,12 @@ compile_run SkinSeamObservationTest \
 compile_run ModuleMapTest \
   "$root/src/pl/runtime/ModuleMap.cpp" \
   "$here/ModuleMapTest.cpp"
+
+# The native egg.json parser. Needs zlib (the loader reads the manifest straight out of the ZIP
+# central directory); `zlib_link` above resolves it for the host.
+compile_run AntEggManifestTest \
+  -I"$root/src" \
+  "$root/src/pl/runtime/AntEggLoader.cpp" \
+  "$here/AntEggManifestTest.cpp" "$zlib_link"
 
 echo "all cosmetics host tests passed"

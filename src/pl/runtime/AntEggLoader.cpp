@@ -275,6 +275,26 @@ bool AntEggLoader::ParseManifest(const std::string& json, AntEggManifest& out,
       if (!dep.empty()) out.dependencies.push_back(dep);
     }
   }
+
+  // Item C3: the permissions slot. Optional (a hand-written package may omit it, and the Java
+  // writer emits an empty array), but when present it must be an array of strings, mirroring the
+  // Kotlin parser - a package accepted by one side and rejected by the other is the exact drift
+  // this struct's doc-comment warns about. Blank entries are dropped rather than stored.
+  auto perms = root.find("permissions");
+  if (perms != root.end()) {
+    if (!perms->is_array()) {
+      error = "permissions must be an array of capability names";
+      return false;
+    }
+    for (const auto& item : *perms) {
+      if (!item.is_string()) {
+        error = "each permission must be a string";
+        return false;
+      }
+      std::string permission = Trim(item.get<std::string>());
+      if (!permission.empty()) out.permissions.push_back(permission);
+    }
+  }
   return true;
 }
 
