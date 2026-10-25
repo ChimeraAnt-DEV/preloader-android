@@ -21,6 +21,14 @@ struct AntEggManifest {
   std::string entry_point;
   std::vector<std::string> dependencies;
 
+  /**
+   * The capabilities the mod declares (item C3). The Java writer always emits this key, even when
+   * empty, so the script-API surface is reserved; this side reads it back so the two parsers agree
+   * on the manifest rather than one silently ignoring a field the other writes. Nothing grants host
+   * access from this list today - it is the declaration an author signs up to.
+   */
+  std::vector<std::string> permissions;
+
   bool IsNative() const { return type == "native"; }
   bool IsScript() const { return type == "script"; }
 
