@@ -1,12 +1,14 @@
 # AGENTS.md
 
 ## Build
-- Android-only CMake target (`preloader`), C++20, NDK toolchain. `CMakeLists.txt`
-  fails fast off-Android and on any ABI other than `arm64-v8a` / `armeabi-v7a`.
-  GlossHook static lib is required at `lib/ARM64/libGlossHook.a` (arm64) or
-  `lib/ARM/libGlossHook.a` (armv7).
-- Sources are listed explicitly in `PRELOADER_SOURCES`; **a new `.cpp` must be
-  added there** or it silently will not build into the library.
+- Android-only CMake target (`preloader`), C++20, NDK toolchain. `CMakeLists.txt` fails fast
+  off-Android, and on any ABI other than `arm64-v8a` (the only ABI the client ships, and the only
+  one GlossHook is vendored for). GlossHook static lib lives at `lib/ARM64/libGlossHook.a`.
+- Sources are listed explicitly in `PRELOADER_SOURCES`; **a new `.cpp` must be added there** or it
+  silently will not build into the library. A new *pure* helper should also be added to
+  `tests/cosmetics/run_tests.sh`, which is where the host tests live.
+- Fetched dependencies are pinned by commit in `CMakeLists.txt` and listed with their licences in
+  `NOTICE`. `README.md` covers the build, the host tests, the mod-facing API and the ABI policy.
 
 ## JNI symbol naming
 - JNI exports bind to the **`org.chimeramc.client.*`** package
@@ -17,10 +19,21 @@
   `llvm-nm -D --defined-only <built libpreloader.so> | grep Java_org_chimeramc_client`.
 
 ## Pattern scanning / hooks
-- `pl::memory::resolveSignature(s)` scans a module's readable `/proc/self/maps`
-  regions for byte signatures; `resolveVtableFunction("14TypeName", slot, module)`
-  resolves an RTTI-named vtable slot through `.rodata`/`.data.rel.ro`; `pl::memory::hook`
-  installs a detour. All are used by `GameHooks.cpp` / `GameLocalPlayer.cpp`.
+- `pl::memory::resolveSignature(s)` scans a module's **executable** `/proc/self/maps` regions for
+  byte signatures; `resolveVtableFunction("14TypeName", slot, module)` resolves an RTTI-named
+  vtable slot through `.rodata`/`.data.rel.ro`; `pl::memory::hook` installs a detour. All are used
+  by `GameHooks.cpp` / `GameLocalPlayer.cpp`.
+- **Module regions are matched by the exact basename** of the maps path column
+  (`pl/memory/ModulePathMatch.hpp`), never `strstr` over the whole line, or `libpreloader.so`
+  would also collect `libpreloader_extra.so`.
+- **Region bytes are read with `process_vm_readv`**, in 1 MB windows with an overlap, so a region
+  that unmaps mid-scan is skipped rather than faulting. The automaton state is reset per window;
+  the overlap is what keeps a match spanning a boundary.
+- **The signature cache is keyed by the module's ELF build id** (`pl/memory/ElfBuildId.hpp`), so a
+  game update relinks `libminecraftpe`, the id changes, and the patterns are re-derived instead of
+  answered from the previous build. The module cache is re-validated with a mapped-region probe.
+- A lookup never `dlopen`s: only `RTLD_NOLOAD`, so resolving a signature cannot load a library as
+  a side effect or leak a handle.
 - Per-version byte signatures and offsets come from `GameHookRules` JSON, configured
   from the launcher via `nativeConfigureSignatureRules(rulesPath, version)`. Keep new
   rules there rather than hardcoding a build list in C++.
@@ -101,11 +114,13 @@
   `mi_is_in_heap_region(ptr)` and fall back to the system allocator.
 
 ## Hook ABI compatibility (`pl::memory::hook`)
-- `hook` is exported as **overloads**, not one function with default arguments: a default
-  argument is resolved at the call site and emits no separate symbol, so a library built against
-  the old 4-argument signature imports `_ZN2pl6memory4hookEPvS1_PS1_NS0_12HookPriorityE` and fails
-  to load (`UnsatisfiedLinkError`) when only the 5-argument version exists. The 3- and 4-argument
-  overloads exist to keep such binaries (e.g. a prebuilt `libinbuiltmods.so`) loadable.
+- `hook` has **one** exported signature: `(target, detour, original, priority, name)`. The name is
+  a parameter rather than a default argument, because a default argument is resolved at the call
+  site and emits no separate symbol, so a mod built against a shorter signature would import a
+  symbol this library does not export and fail to load.
+- The 3- and 4-argument overloads were removed once the client stopped shipping the prebuilt
+  `libinbuiltmods.so` that needed them. `LegacyAbiTest` pins the remaining signature at compile
+  time, so a future arity change is a build failure rather than a mod that fails at runtime.
 
 ## Live resource-pack reload (`GameResourcePackReload`)
 - `nativeReloadResourcePacks()` / `pl::runtime::ReloadResourcePacks()` is a **fail-safe
