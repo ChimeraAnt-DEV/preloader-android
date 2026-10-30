@@ -10,6 +10,7 @@
 #include <fmt/format.h>
 #include <fmt/std.h>
 
+#include <atomic>
 #include <exception>
 #include <limits>
 #include <memory>
@@ -23,10 +24,37 @@ namespace pl::log {
 
 /**
  * @brief Named Android logger with fmt-style messages.
+ *
+ * <p><b>Cost.</b> Formatting is the expensive part of a log line, and the log sites here are
+ * reached from the game's own input and render paths, so a disabled line must not format. Every
+ * method checks the level first and returns before `fmt::vformat` runs; a level check is one
+ * relaxed atomic load. `debug` and `verbose` additionally compile out entirely when `NDEBUG` is
+ * set, so a release build carries neither the format string nor the branch.
  */
 class Logger {
 public:
   explicit Logger(std::string name) : mLoggerName(std::move(name)) {}
+
+  /**
+   * @brief The lowest level that is emitted, as an {@code ANDROID_LOG_*} value.
+   *
+   * <p>One relaxed atomic, read on every call. The launcher can raise it at runtime to quieten a
+   * session without rebuilding; a release build starts at {@code ANDROID_LOG_INFO} and a debug
+   * build at {@code ANDROID_LOG_DEBUG}.
+   */
+  static int level() {
+    return sLevel.load(std::memory_order_relaxed);
+  }
+
+  /** Sets the minimum level that is emitted. */
+  static void setLevel(int androidLevel) {
+    sLevel.store(androidLevel, std::memory_order_relaxed);
+  }
+
+  /** True when a message at [androidLevel] would be emitted. */
+  static bool enabled(int androidLevel) {
+    return androidLevel >= sLevel.load(std::memory_order_relaxed);
+  }
 
   /**
    * @brief Returns a process-wide logger for the given tag.
@@ -46,6 +74,19 @@ public:
   }
 
   /**
+   * @brief Writes a verbose log line. Compiled out in release builds.
+   */
+  template <typename... Args>
+  void verbose(std::string_view fmtStr, Args &&...args) const {
+#ifdef NDEBUG
+    (void) fmtStr;
+    ((void) args, ...);
+#else
+    log(ANDROID_LOG_VERBOSE, fmtStr, std::forward<Args>(args)...);
+#endif
+  }
+
+  /**
    * @brief Writes an informational log line.
    */
   template <typename... Args>
@@ -54,11 +95,16 @@ public:
   }
 
   /**
-   * @brief Writes a debug log line.
+   * @brief Writes a debug log line. Compiled out in release builds.
    */
   template <typename... Args>
   void debug(std::string_view fmtStr, Args &&...args) const {
+#ifdef NDEBUG
+    (void) fmtStr;
+    ((void) args, ...);
+#else
     log(ANDROID_LOG_DEBUG, fmtStr, std::forward<Args>(args)...);
+#endif
   }
 
   /**
@@ -83,9 +129,18 @@ private:
   inline static std::unordered_map<std::string, std::unique_ptr<Logger>>
       sLoggers{};
   inline static std::mutex sLoggerMutex{};
+#ifdef NDEBUG
+  inline static std::atomic<int> sLevel{ANDROID_LOG_INFO};
+#else
+  inline static std::atomic<int> sLevel{ANDROID_LOG_DEBUG};
+#endif
 
   template <typename... Args>
   void log(int androidLevel, std::string_view fmtStr, Args &&...args) const {
+    // The level check comes before any formatting, so a disabled line costs one atomic load.
+    if (!enabled(androidLevel)) {
+      return;
+    }
     try {
       const auto message =
           fmt::vformat(fmt::string_view(fmtStr.data(), fmtStr.size()),
