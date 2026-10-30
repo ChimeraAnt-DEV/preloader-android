@@ -2,44 +2,49 @@
 
 #include <functional>
 #include <mutex>
+#include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
 #include "pl/Input.hpp"
+#include "pl/runtime/CallbackSnapshot.hpp"
 #include "pl/runtime/JavaRuntime.h"
 
 namespace pl::runtime {
 namespace {
 
-std::vector<PreloaderInput_OnTouch_Fn> g_touchCallbacks;
-std::vector<PreloaderInput_OnKeyEvent_Fn> g_keyEventCallbacks;
-std::vector<PreloaderInput_OnTextInput_Fn> g_textInputCallbacks;
-std::vector<PreloaderInput_OnMouse_Fn> g_mouseCallbacks;
-std::vector<pl::input::TouchCallback> g_cppTouchCallbacks;
-std::vector<pl::input::KeyCallback> g_cppKeyCallbacks;
-std::vector<pl::input::TextInputCallback> g_cppTextInputCallbacks;
-std::vector<pl::input::MouseCallback> g_cppMouseCallbacks;
+// The four dispatchers run inside the game's own input path, so their callback lists are published
+// as immutable snapshots read with one atomic load and iterated by const reference. Registration is
+// rare, so the copy-and-swap it costs does not matter.
+CallbackSnapshot<PreloaderInput_OnTouch_Fn> g_touchCallbacks;
+CallbackSnapshot<PreloaderInput_OnKeyEvent_Fn> g_keyEventCallbacks;
+CallbackSnapshot<PreloaderInput_OnTextInput_Fn> g_textInputCallbacks;
+CallbackSnapshot<PreloaderInput_OnMouse_Fn> g_mouseCallbacks;
+CallbackSnapshot<pl::input::TouchCallback> g_cppTouchCallbacks;
+CallbackSnapshot<pl::input::KeyCallback> g_cppKeyCallbacks;
+CallbackSnapshot<pl::input::TextInputCallback> g_cppTextInputCallbacks;
+CallbackSnapshot<pl::input::MouseCallback> g_cppMouseCallbacks;
+
+// The document callback is a single slot with take-once semantics, not a list, so it keeps a small
+// mutex; it is not on the per-event path.
 pl::input::DocumentCallback g_documentCallback;
 std::mutex g_callbackMutex;
 
 void RegisterLegacyTouchCallback(PreloaderInput_OnTouch_Fn callback) {
-  std::lock_guard<std::mutex> lock(g_callbackMutex);
-  g_touchCallbacks.push_back(callback);
+  g_touchCallbacks.add(callback);
 }
 
 void RegisterLegacyKeyEventCallback(PreloaderInput_OnKeyEvent_Fn callback) {
-  std::lock_guard<std::mutex> lock(g_callbackMutex);
-  g_keyEventCallbacks.push_back(callback);
+  g_keyEventCallbacks.add(callback);
 }
 
 void RegisterLegacyTextInputCallback(PreloaderInput_OnTextInput_Fn callback) {
-  std::lock_guard<std::mutex> lock(g_callbackMutex);
-  g_textInputCallbacks.push_back(callback);
+  g_textInputCallbacks.add(callback);
 }
 
 void RegisterLegacyMouseCallback(PreloaderInput_OnMouse_Fn callback) {
-  std::lock_guard<std::mutex> lock(g_callbackMutex);
-  g_mouseCallbacks.push_back(callback);
+  g_mouseCallbacks.add(callback);
 }
 
 void ShowKeyboardImpl() { CallActivityVoidMethod("showSoftKeyboard"); }
@@ -73,107 +78,77 @@ PreloaderInput_Interface g_inputInterface = {
 PreloaderInput_Interface *GetInputInterface() { return &g_inputInterface; }
 
 bool DispatchTouch(int action, int pointerId, float x, float y) {
-  std::vector<PreloaderInput_OnTouch_Fn> legacyCallbacks;
-  std::vector<pl::input::TouchCallback> cppCallbacks;
-  {
-    std::lock_guard<std::mutex> lock(g_callbackMutex);
-    legacyCallbacks = g_touchCallbacks;
-    cppCallbacks = g_cppTouchCallbacks;
-  }
-
   bool consumed = false;
-  for (auto callback : legacyCallbacks) {
+  g_touchCallbacks.forEach([&](const PreloaderInput_OnTouch_Fn &callback) {
     if (callback) {
       consumed |= InvokeSafely([&] { return callback(action, pointerId, x, y); });
     }
-  }
+  });
   const pl::input::TouchEvent event{
       .action = action,
       .pointerId = pointerId,
       .x = x,
       .y = y,
   };
-  for (const auto &callback : cppCallbacks) {
+  g_cppTouchCallbacks.forEach([&](const pl::input::TouchCallback &callback) {
     if (callback) {
       consumed |= InvokeSafely([&] { return callback(event); });
     }
-  }
+  });
   return consumed;
 }
 
 bool DispatchKeyEvent(int keyCode, unsigned int unicodeChar, bool isKeyDown) {
-  std::vector<PreloaderInput_OnKeyEvent_Fn> legacyCallbacks;
-  std::vector<pl::input::KeyCallback> cppCallbacks;
-  {
-    std::lock_guard<std::mutex> lock(g_callbackMutex);
-    legacyCallbacks = g_keyEventCallbacks;
-    cppCallbacks = g_cppKeyCallbacks;
-  }
-
   bool consumed = false;
-  for (auto callback : legacyCallbacks) {
+  g_keyEventCallbacks.forEach([&](const PreloaderInput_OnKeyEvent_Fn &callback) {
     if (callback) {
       consumed |= InvokeSafely([&] { return callback(keyCode, unicodeChar, isKeyDown); });
     }
-  }
+  });
   const pl::input::KeyEvent event{
       .keyCode = keyCode,
       .unicodeChar = unicodeChar,
       .isKeyDown = isKeyDown,
   };
-  for (const auto &callback : cppCallbacks) {
+  g_cppKeyCallbacks.forEach([&](const pl::input::KeyCallback &callback) {
     if (callback) {
       consumed |= InvokeSafely([&] { return callback(event); });
     }
-  }
+  });
   return consumed;
 }
 
-bool DispatchTextInput(std::string text) {
-  std::vector<PreloaderInput_OnTextInput_Fn> legacyCallbacks;
-  std::vector<pl::input::TextInputCallback> cppCallbacks;
-  {
-    std::lock_guard<std::mutex> lock(g_callbackMutex);
-    legacyCallbacks = g_textInputCallbacks;
-    cppCallbacks = g_cppTextInputCallbacks;
-  }
-
+bool DispatchTextInput(std::string_view text) {
   bool consumed = false;
-  for (auto callback : legacyCallbacks) {
+  g_textInputCallbacks.forEach([&](const PreloaderInput_OnTextInput_Fn &callback) {
     if (callback) {
       consumed |= InvokeSafely([&] { return callback(text.data(), text.size()); });
     }
-  }
-  const pl::input::TextInputEvent event{.text = std::move(text)};
-  for (const auto &callback : cppCallbacks) {
+  });
+  // The C++ callback API takes the event by value, so this is the one copy the text path needs;
+  // the view itself is not copied on the way in.
+  const pl::input::TextInputEvent event{.text = std::string(text)};
+  g_cppTextInputCallbacks.forEach([&](const pl::input::TextInputCallback &callback) {
     if (callback) {
       consumed |= InvokeSafely([&] { return callback(event); });
     }
-  }
+  });
   return consumed;
 }
 
 bool DispatchMouse(int button, bool isDown) {
-  std::vector<PreloaderInput_OnMouse_Fn> legacyCallbacks;
-  std::vector<pl::input::MouseCallback> cppCallbacks;
-  {
-    std::lock_guard<std::mutex> lock(g_callbackMutex);
-    legacyCallbacks = g_mouseCallbacks;
-    cppCallbacks = g_cppMouseCallbacks;
-  }
-
   bool consumed = false;
-  for (auto callback : legacyCallbacks) {
+  g_mouseCallbacks.forEach([&](const PreloaderInput_OnMouse_Fn &callback) {
     if (callback) {
       consumed |= InvokeSafely([&] { return callback(button, isDown); });
     }
-  }
+  });
   const pl::input::MouseEvent event{.button = button, .isDown = isDown};
-  for (const auto &callback : cppCallbacks) {
+  g_cppMouseCallbacks.forEach([&](const pl::input::MouseCallback &callback) {
     if (callback) {
       consumed |= InvokeSafely([&] { return callback(event); });
     }
-  }
+  });
   return consumed;
 }
 
@@ -221,23 +196,19 @@ void ClearDocumentRequest() {
 }
 
 void RegisterCppTouchCallback(pl::input::TouchCallback callback) {
-  std::lock_guard<std::mutex> lock(g_callbackMutex);
-  g_cppTouchCallbacks.push_back(std::move(callback));
+  g_cppTouchCallbacks.add(std::move(callback));
 }
 
 void RegisterCppKeyCallback(pl::input::KeyCallback callback) {
-  std::lock_guard<std::mutex> lock(g_callbackMutex);
-  g_cppKeyCallbacks.push_back(std::move(callback));
+  g_cppKeyCallbacks.add(std::move(callback));
 }
 
 void RegisterCppTextInputCallback(pl::input::TextInputCallback callback) {
-  std::lock_guard<std::mutex> lock(g_callbackMutex);
-  g_cppTextInputCallbacks.push_back(std::move(callback));
+  g_cppTextInputCallbacks.add(std::move(callback));
 }
 
 void RegisterCppMouseCallback(pl::input::MouseCallback callback) {
-  std::lock_guard<std::mutex> lock(g_callbackMutex);
-  g_cppMouseCallbacks.push_back(std::move(callback));
+  g_cppMouseCallbacks.add(std::move(callback));
 }
 
 void ShowKeyboard() { ShowKeyboardImpl(); }
