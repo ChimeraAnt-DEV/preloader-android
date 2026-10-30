@@ -120,6 +120,14 @@ compile_run VersionCompareTest \
 compile_run CallbackSnapshotTest \
   "$here/CallbackSnapshotTest.cpp"
 
+# The image-override stores are a pure header too.
+compile_run ImageOverrideRegistryTest \
+  "$here/ImageOverrideRegistryTest.cpp"
+
+# The engine allocator is a pure header as well.
+compile_run EngineAllocatorTest \
+  "$here/EngineAllocatorTest.cpp"
+
 compile_run Utf8Test \
   "$here/Utf8Test.cpp"
 
