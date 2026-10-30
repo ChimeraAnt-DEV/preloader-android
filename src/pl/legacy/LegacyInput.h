@@ -1,6 +1,15 @@
 #pragma once
 
-#include <jni.h>
+/**
+ * @file LegacyInput.h
+ * @brief The C input interface (`GetPreloaderInput`).
+ *
+ * <p><b>Still in use.</b> The preloader's own {@link GetInputInterface} builds a
+ * `PreloaderInput_Interface`, and the C accessor is exported for mods built against it. The
+ * callbacks it carries are the same ones {@link pl::runtime} dispatches to; see
+ * `pl/runtime/InputBridge.h` for the C++ side.
+ */
+
 #include <stdbool.h>
 #include <stddef.h>
 

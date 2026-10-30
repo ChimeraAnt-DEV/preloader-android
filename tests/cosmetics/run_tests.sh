@@ -86,7 +86,7 @@ compile_run() {
   local name="$1"; shift
   echo "== $name =="
   "$cxx" -std=c++20 -O1 -g \
-    -I"$root/include" -I"$nlohmann" ${zlib_include:+-I"$zlib_include"} \
+    -I"$root/include" -I"$root/src" -I"$nlohmann" ${zlib_include:+-I"$zlib_include"} \
     "$@" -o "$work/$name"
   "$work/$name"
 }
@@ -137,6 +137,10 @@ compile_run ModulePathMatchTest \
 compile_run ElfBuildIdTest \
   "$here/ElfBuildIdTest.cpp" \
   "$root/src/pl/memory/ElfBuildId.cpp"
+
+# The exported C ABI is compile-time-pinned, so a rename fails the build.
+compile_run LegacyAbiTest \
+  "$here/LegacyAbiTest.cpp"
 
 compile_run Utf8Test \
   "$here/Utf8Test.cpp"
