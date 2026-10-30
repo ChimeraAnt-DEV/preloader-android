@@ -116,6 +116,10 @@ compile_run NativeCosmeticDataTest \
 compile_run VersionCompareTest \
   "$here/VersionCompareTest.cpp"
 
+# The input bridge's callback snapshot is a pure header, so it needs no source file of its own.
+compile_run CallbackSnapshotTest \
+  "$here/CallbackSnapshotTest.cpp"
+
 compile_run Utf8Test \
   "$here/Utf8Test.cpp"
 
