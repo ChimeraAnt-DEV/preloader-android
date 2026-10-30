@@ -146,9 +146,10 @@ static_assert(alignof(BufferRef) == 8, "cg::Buffer view must be 8-byte aligned")
  * The engine frees an `mce::Image`'s backing store through its own allocator when the skin unloads.
  * A buffer from a foreign allocator (the launcher's `malloc`, or a `std::vector`) breaks that: the
  * engine's free reads our pointer as one of its own blocks and faults or double-frees. This helper
- * provides a buffer from a small, tracked allocator whose free path matches, and stamps a size and
- * magic in a header before the returned pointer so a mismatched or double free is refused instead
- * of corrupting the heap.
+ * provides a buffer from a small allocator whose free path matches, and stamps the alignment, the
+ * base pointer and a magic word in a header immediately before the returned pointer, so a
+ * mismatched or double free is refused at the pointer instead of corrupting the heap -- and a free
+ * needs no lock or side table lookup.
  *
  * Prefer `BuildImageFromPng`/`BuildImageFromRgba`, which let the engine allocate its own buffer and
  * copy into it. Use this only when a buffer must be produced before the engine call.

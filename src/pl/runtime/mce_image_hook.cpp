@@ -3,16 +3,16 @@
 #include <atomic>
 #include <cstring>
 #include <ctime>
-#include <mutex>
 #include <new>
-#include <unordered_map>
 #include <vector>
 
 #include "pl/Logger.hpp"
 #include "pl/cosmetics/NativeCosmeticData.hpp"
 #include "pl/memory/Hook.hpp"
+#include "pl/runtime/EngineAllocator.hpp"
 #include "pl/runtime/GameCosmetics.h"
 #include "pl/runtime/GameHookRules.h"
+#include "pl/runtime/ImageOverrideRegistry.hpp"
 
 namespace pl::runtime {
 namespace {
@@ -110,17 +110,16 @@ LoadImageFn g_originalLoader = nullptr;
 // launcher registers "when the engine loads bytes hashing to H, use these pixels instead". This is
 // the one key that is actually available at this seam, and it is stable (the same source texture
 // hashes the same every load).
-std::mutex g_subMutex;
-std::unordered_map<std::uint64_t, std::vector<std::uint8_t>> g_subPixels;
-std::unordered_map<std::uint64_t, CosmeticImage> g_subMeta;
+//
+// The registry publishes an immutable sorted snapshot: a lookup is a binary search with one atomic
+// load and no allocation, and the shared pointer it returns owns the pixels for the whole engine
+// call. A writer (the launcher) builds a new snapshot and swaps it in.
+ImageOverrideRegistry g_subRegistry;
 
 // Single-slot override for the explicit "the very next image the engine builds is ours" case. Set
 // by the launcher immediately before it triggers one known upload; consumed once. Cleared on use
 // and on session reset so it can never apply to an unrelated later upload.
-std::mutex g_nextMutex;
-std::vector<std::uint8_t> g_nextPixels;
-std::uint32_t g_nextWidth = 0;
-std::uint32_t g_nextHeight = 0;
+NextImageOverride g_nextOverride;
 
 std::atomic<TextureFlushFn> g_flusher{nullptr};
 std::atomic<void *> g_flusherUser{nullptr};
@@ -139,12 +138,7 @@ std::atomic<void *> g_flusherUser{nullptr};
 // upload, not a proven "this is the local player's skin". The launcher labels it as such.
 constexpr std::size_t kSkinMaxBytes = 512U * 512U * 4U;  // 1 MiB: covers every shipped skin size
 
-std::mutex g_skinMutex;
-std::vector<std::uint8_t> g_skinBytes;
-std::uint32_t g_skinWidth = 0;
-std::uint32_t g_skinHeight = 0;
-std::uint32_t g_skinFormat = 0;
-std::atomic<std::int64_t> g_skinStampMs{0};
+CapturedImageSlot g_skinCapture;
 
 long long MonotonicMs() {
   timespec ts{};
@@ -190,12 +184,8 @@ std::uint32_t BaseSkinEdge(std::uint32_t format, const std::uint8_t *data, std::
 void CaptureSkin(std::uint32_t format, const std::uint8_t *data, std::size_t size,
                  std::uint32_t edge) {
   if (data == nullptr || size == 0 || edge == 0) return;
-  std::lock_guard<std::mutex> lock(g_skinMutex);
-  g_skinBytes.assign(data, data + size);
-  g_skinWidth = edge;
-  g_skinHeight = edge;
-  g_skinFormat = format;
-  g_skinStampMs.store(MonotonicMs(), std::memory_order_relaxed);
+  g_skinCapture.set(std::vector<std::uint8_t>(data, data + size), edge, edge, format,
+                    MonotonicMs());
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -224,12 +214,7 @@ void CaptureSkin(std::uint32_t format, const std::uint8_t *data, std::size_t siz
 
 constexpr std::size_t kCapeMaxBytes = 1024U * 1024U;
 
-std::mutex g_capeMutex;
-std::vector<std::uint8_t> g_capeBytes;
-std::uint32_t g_capeWidth = 0;
-std::uint32_t g_capeHeight = 0;
-std::uint32_t g_capeFormat = 0;
-std::atomic<std::int64_t> g_capeStampMs{0};
+CapturedImageSlot g_capeCapture;
 std::atomic<std::uint32_t> g_capeSubstitutions{0};
 
 // The cape/skin shape rules (a cape is a 2:1 panel, a skin is a square) live in the pure,
@@ -245,19 +230,10 @@ std::uint32_t CapeEdge(std::uint32_t format, const std::uint8_t *data, std::size
 void CaptureCape(std::uint32_t format, const std::uint8_t *data, std::size_t size,
                  std::uint32_t width, std::uint32_t height) {
   if (data == nullptr || size == 0 || width == 0 || height == 0) return;
-  std::lock_guard<std::mutex> lock(g_capeMutex);
-  g_capeBytes.assign(data, data + size);
-  g_capeWidth = width;
-  g_capeHeight = height;
-  g_capeFormat = format;
-  g_capeStampMs.store(MonotonicMs(), std::memory_order_relaxed);
+  g_capeCapture.set(std::vector<std::uint8_t>(data, data + size), width, height, format,
+                    MonotonicMs());
 }
 
-// Tracked allocations, so a foreign or double free is refused instead of corrupting the heap. The
-// alignment is stored alongside the pointer because an aligned `operator delete` must be given the
-// same alignment the matching `operator new` was called with.
-std::mutex g_allocMutex;
-std::unordered_map<void *, std::size_t> g_allocations;
 
 std::uint64_t Fnv1a(const std::uint8_t *data, std::size_t size) {
   std::uint64_t hash = 1469598103934665603ULL;
@@ -321,33 +297,17 @@ void RunInitProbe() {
 // The pipeline detour
 // ---------------------------------------------------------------------------------------------
 
-// Consumes the single-slot override, if one is armed. Returns true and fills the outputs when it
-// took the slot.
-bool TakeNextOverride(const std::uint8_t **outData, std::size_t *outSize, std::uint32_t *outFormat) {
-  std::lock_guard<std::mutex> lock(g_nextMutex);
-  if (g_nextPixels.empty() || g_nextWidth == 0 || g_nextHeight == 0) return false;
-  *outData = g_nextPixels.data();
-  *outSize = g_nextPixels.size();
-  *outFormat = kFormatRgba8;
-  g_nextPixels.clear();
-  g_nextWidth = 0;
-  g_nextHeight = 0;
-  return true;
+// Consumes the single-slot override, if one is armed. The pixels are moved out under an atomic
+// exchange, so the returned pointer owns the buffer and a concurrent arming can neither free it nor
+// hand the taker a pointer into an emptied vector.
+ImageOverrideRegistry::ImagePtr TakeNextOverride() {
+  return g_nextOverride.take();
 }
 
-// Looks up a content-addressed override for the incoming bytes. Returns true and fills the outputs
-// on a hit.
-bool FindContentOverride(std::uint64_t hash, const std::uint8_t **outData, std::size_t *outSize,
-                         std::uint32_t *outFormat) {
-  std::lock_guard<std::mutex> lock(g_subMutex);
-  auto it = g_subMeta.find(hash);
-  if (it == g_subMeta.end()) return false;
-  auto pixels = g_subPixels.find(hash);
-  if (pixels == g_subPixels.end() || pixels->second.empty()) return false;
-  *outData = pixels->second.data();
-  *outSize = pixels->second.size();
-  *outFormat = kFormatRgba8;
-  return true;
+// Looks up a content-addressed override for the incoming bytes. The returned shared pointer keeps
+// the pixels alive for the whole engine call, so the registry lock is not held across it.
+ImageOverrideRegistry::ImagePtr FindContentOverride(std::uint64_t hash) {
+  return g_subRegistry.find(hash);
 }
 
 // The detour. It runs on whatever thread the engine builds images on (render/skin-load), so it does
@@ -374,32 +334,29 @@ LoaderReturn HookLoader(void *out, std::uint32_t format, const std::uint8_t *dat
     }
   }
 
-  const std::uint8_t *useData = data;
-  std::size_t useSize = size;
-  std::uint32_t useFormat = format;
-
-  // 1) The explicit single-slot override wins: the launcher armed it for this exact upload.
-  const std::uint8_t *overrideData = nullptr;
-  std::size_t overrideSize = 0;
-  std::uint32_t overrideFormat = 0;
-  if (TakeNextOverride(&overrideData, &overrideSize, &overrideFormat)) {
-    useData = overrideData;
-    useSize = overrideSize;
-    useFormat = overrideFormat;
-    g_substitutions.fetch_add(1, std::memory_order_relaxed);
-  } else if (data != nullptr && size != 0) {
+  // 1) The explicit single-slot override wins: the launcher armed it for this exact upload. The
+  //    shared pointer owns the pixels, so they stay alive across the engine call below.
+  ImageOverrideRegistry::ImagePtr override = TakeNextOverride();
+  if (!override && data != nullptr && size != 0) {
     // 2) Content-addressed substitution: the engine is loading bytes we have a replacement for.
     const std::uint64_t hash = Fnv1a(data, size);
-    if (FindContentOverride(hash, &overrideData, &overrideSize, &overrideFormat)) {
-      useData = overrideData;
-      useSize = overrideSize;
-      useFormat = overrideFormat;
-      g_substitutions.fetch_add(1, std::memory_order_relaxed);
+    override = FindContentOverride(hash);
+    if (override) {
       std::uint32_t capeW = 0, capeH = 0;
       if (CapeEdge(format, data, size, &capeW, &capeH) != 0) {
         g_capeSubstitutions.fetch_add(1, std::memory_order_relaxed);
       }
     }
+  }
+
+  const std::uint8_t *useData = data;
+  std::size_t useSize = size;
+  std::uint32_t useFormat = format;
+  if (override && !override->pixels.empty()) {
+    useData = override->pixels.data();
+    useSize = override->pixels.size();
+    useFormat = kFormatRgba8;
+    g_substitutions.fetch_add(1, std::memory_order_relaxed);
   }
 
   if (g_originalLoader) {
@@ -416,45 +373,17 @@ LoaderReturn HookLoader(void *out, std::uint32_t format, const std::uint8_t *dat
 // ---------------------------------------------------------------------------------------------
 
 void *EngineAllocate(std::size_t bytes, std::size_t alignment) {
-  if (bytes == 0) return nullptr;
-  if (alignment < alignof(void *)) alignment = alignof(void *);
-  // Round up to a power of two; the aligned operator new requires it.
-  std::size_t align = 1;
-  while (align < alignment && align < (std::size_t{1} << 20)) align <<= 1;
-  void *ptr = nullptr;
-  try {
-    ptr = ::operator new(bytes, std::align_val_t(align));
-  } catch (...) {
-    ptr = nullptr;
-  }
-  if (ptr == nullptr) return nullptr;
-  std::memset(ptr, 0, bytes);
-  {
-    std::lock_guard<std::mutex> lock(g_allocMutex);
-    g_allocations[ptr] = align;
-  }
-  return ptr;
+  return EngineAllocImpl(bytes, alignment);
 }
 
 void EngineFree(void *ptr) noexcept {
   if (ptr == nullptr) return;
-  std::size_t align = 0;
-  {
-    std::lock_guard<std::mutex> lock(g_allocMutex);
-    auto it = g_allocations.find(ptr);
-    if (it != g_allocations.end()) {
-      align = it->second;
-      g_allocations.erase(it);
-    }
-  }
-  if (align == 0) {
+  if (!EngineFreeImpl(ptr)) {
     // A double free, or a pointer we did not allocate. Refuse it: the engine's allocator owns its
     // own buffers and this module must never free them, so reaching here is a bug we log, not a
     // crash we cause.
     preloaderLogger.warn("mce::Image: refused free of an untracked pointer");
-    return;
   }
-  ::operator delete(ptr, std::align_val_t(align));
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -488,31 +417,21 @@ bool IsImagePathVerified() { return g_imagePathVerified.load(std::memory_order_r
 bool CopyCapturedSkin(std::uint8_t *out, std::size_t maxBytes, std::uint32_t *width,
                       std::uint32_t *height, std::uint32_t *format, std::int64_t *stampMs,
                       std::size_t *outSize) {
-  std::lock_guard<std::mutex> lock(g_skinMutex);
-  if (g_skinBytes.empty() || g_skinWidth == 0 || g_skinHeight == 0) return false;
-  if (outSize != nullptr) *outSize = g_skinBytes.size();
-  if (out == nullptr || maxBytes < g_skinBytes.size()) return false;
-  std::memcpy(out, g_skinBytes.data(), g_skinBytes.size());
-  if (width != nullptr) *width = g_skinWidth;
-  if (height != nullptr) *height = g_skinHeight;
-  if (format != nullptr) *format = g_skinFormat;
-  if (stampMs != nullptr) *stampMs = g_skinStampMs.load(std::memory_order_relaxed);
+  const CapturedImageSlot::ImagePtr image = g_skinCapture.get();
+  if (!image || image->bytes.empty() || image->width == 0 || image->height == 0) return false;
+  if (outSize != nullptr) *outSize = image->bytes.size();
+  if (out == nullptr || maxBytes < image->bytes.size()) return false;
+  std::memcpy(out, image->bytes.data(), image->bytes.size());
+  if (width != nullptr) *width = image->width;
+  if (height != nullptr) *height = image->height;
+  if (format != nullptr) *format = image->format;
+  if (stampMs != nullptr) *stampMs = image->stampMs;
   return true;
 }
 
-void ClearCapturedSkin() {
-  std::lock_guard<std::mutex> lock(g_skinMutex);
-  g_skinBytes.clear();
-  g_skinWidth = 0;
-  g_skinHeight = 0;
-  g_skinFormat = 0;
-  g_skinStampMs.store(0, std::memory_order_relaxed);
-}
+void ClearCapturedSkin() { g_skinCapture.clear(); }
 
-bool HasCapturedSkin() {
-  std::lock_guard<std::mutex> lock(g_skinMutex);
-  return !g_skinBytes.empty() && g_skinWidth != 0;
-}
+bool HasCapturedSkin() { return g_skinCapture.has(); }
 
 // ---------------------------------------------------------------------------------------------
 // Cape capture / substitution (public)
@@ -521,31 +440,21 @@ bool HasCapturedSkin() {
 bool CopyCapturedCape(std::uint8_t *out, std::size_t maxBytes, std::uint32_t *width,
                       std::uint32_t *height, std::uint32_t *format, std::int64_t *stampMs,
                       std::size_t *outSize) {
-  std::lock_guard<std::mutex> lock(g_capeMutex);
-  if (g_capeBytes.empty() || g_capeWidth == 0 || g_capeHeight == 0) return false;
-  if (outSize != nullptr) *outSize = g_capeBytes.size();
-  if (out == nullptr || maxBytes < g_capeBytes.size()) return false;
-  std::memcpy(out, g_capeBytes.data(), g_capeBytes.size());
-  if (width != nullptr) *width = g_capeWidth;
-  if (height != nullptr) *height = g_capeHeight;
-  if (format != nullptr) *format = g_capeFormat;
-  if (stampMs != nullptr) *stampMs = g_capeStampMs.load(std::memory_order_relaxed);
+  const CapturedImageSlot::ImagePtr image = g_capeCapture.get();
+  if (!image || image->bytes.empty() || image->width == 0 || image->height == 0) return false;
+  if (outSize != nullptr) *outSize = image->bytes.size();
+  if (out == nullptr || maxBytes < image->bytes.size()) return false;
+  std::memcpy(out, image->bytes.data(), image->bytes.size());
+  if (width != nullptr) *width = image->width;
+  if (height != nullptr) *height = image->height;
+  if (format != nullptr) *format = image->format;
+  if (stampMs != nullptr) *stampMs = image->stampMs;
   return true;
 }
 
-void ClearCapturedCape() {
-  std::lock_guard<std::mutex> lock(g_capeMutex);
-  g_capeBytes.clear();
-  g_capeWidth = 0;
-  g_capeHeight = 0;
-  g_capeFormat = 0;
-  g_capeStampMs.store(0, std::memory_order_relaxed);
-}
+void ClearCapturedCape() { g_capeCapture.clear(); }
 
-bool HasCapturedCape() {
-  std::lock_guard<std::mutex> lock(g_capeMutex);
-  return !g_capeBytes.empty() && g_capeWidth != 0;
-}
+bool HasCapturedCape() { return g_capeCapture.has(); }
 
 void SetCapeSubstitution(const std::uint8_t *rgba, std::uint32_t width, std::uint32_t height) {
   if (rgba == nullptr || width == 0 || height == 0) {
@@ -556,29 +465,19 @@ void SetCapeSubstitution(const std::uint8_t *rgba, std::uint32_t width, std::uin
   // what the captured cape holds. Registering that hash as "build from these pixels instead" makes
   // the substitution fire for the local cape and nothing else: a peer's cape has different bytes
   // and so a different hash, and with no capture there is no key and nothing is replaced.
-  std::vector<std::uint8_t> keyBytes;
-  {
-    std::lock_guard<std::mutex> lock(g_capeMutex);
-    if (g_capeBytes.empty()) return;
-    keyBytes = g_capeBytes;
-  }
-  SetContentSubstitution(keyBytes.data(), keyBytes.size(), rgba, width, height);
+  const CapturedImageSlot::ImagePtr cape = g_capeCapture.get();
+  if (!cape || cape->bytes.empty()) return;
+  SetContentSubstitution(cape->bytes.data(), cape->bytes.size(), rgba, width, height);
 }
 
 void ClearCapeSubstitution() {
   // Removing the local cape override must not disturb any other substitution, so this is the
   // registry's own remove-by-key path rather than a clear-all. Recompute the captured key and drop
   // just that entry.
-  std::vector<std::uint8_t> keyBytes;
-  {
-    std::lock_guard<std::mutex> lock(g_capeMutex);
-    keyBytes = g_capeBytes;
-  }
-  if (keyBytes.empty()) return;
-  const std::uint64_t hash = Fnv1a(keyBytes.data(), keyBytes.size());
-  std::lock_guard<std::mutex> lock(g_subMutex);
-  g_subPixels.erase(hash);
-  g_subMeta.erase(hash);
+  const CapturedImageSlot::ImagePtr cape = g_capeCapture.get();
+  if (!cape || cape->bytes.empty()) return;
+  const std::uint64_t hash = Fnv1a(cape->bytes.data(), cape->bytes.size());
+  g_subRegistry.remove(hash);
 }
 
 std::uint32_t CapeSubstitutionCount() {
@@ -625,12 +524,7 @@ bool ReadMceImageHookStats(std::uint32_t out[4]) {
   if (out == nullptr) return false;
   out[0] = g_hookCalls.load(std::memory_order_relaxed);
   out[1] = g_substitutions.load(std::memory_order_relaxed);
-  std::size_t overrides = 0;
-  {
-    std::lock_guard<std::mutex> lock(g_subMutex);
-    overrides = g_subMeta.size();
-  }
-  out[2] = static_cast<std::uint32_t>(overrides);
+  out[2] = static_cast<std::uint32_t>(g_subRegistry.size());
   out[3] = static_cast<std::uint32_t>(g_bufferBytesSeen.load(std::memory_order_relaxed));
   return out[0] != 0;
 }
@@ -666,34 +560,17 @@ void SetContentSubstitution(const std::uint8_t *sourceBytes, std::size_t sourceS
                             const std::uint8_t *rgba, std::uint32_t width, std::uint32_t height) {
   if (sourceBytes == nullptr || sourceSize == 0) return;
   const std::uint64_t hash = Fnv1a(sourceBytes, sourceSize);
-  std::lock_guard<std::mutex> lock(g_subMutex);
   if (rgba == nullptr || width == 0 || height == 0) {
-    g_subPixels.erase(hash);
-    g_subMeta.erase(hash);
+    g_subRegistry.remove(hash);
     return;
   }
   const std::size_t bytes = static_cast<std::size_t>(width) * height * 4U;
-  std::vector<std::uint8_t> copy(rgba, rgba + bytes);
-  auto inserted = g_subPixels.emplace(hash, std::move(copy));
-  if (!inserted.second) inserted.first->second = std::move(copy);
-  CosmeticImage image;
-  image.key = hash;
-  image.rgba = inserted.first->second.data();
-  image.width = width;
-  image.height = height;
-  g_subMeta[hash] = image;
+  g_subRegistry.set(hash, std::vector<std::uint8_t>(rgba, rgba + bytes), width, height);
 }
 
-void ClearContentSubstitutions() {
-  std::lock_guard<std::mutex> lock(g_subMutex);
-  g_subPixels.clear();
-  g_subMeta.clear();
-}
+void ClearContentSubstitutions() { g_subRegistry.clear(); }
 
-std::size_t SubstitutionCount() {
-  std::lock_guard<std::mutex> lock(g_subMutex);
-  return g_subMeta.size();
-}
+std::size_t SubstitutionCount() { return g_subRegistry.size(); }
 
 void ArmNextImageOverride(const std::uint8_t *rgba, std::uint32_t width, std::uint32_t height) {
   if (rgba == nullptr || width == 0 || height == 0) {
@@ -701,18 +578,10 @@ void ArmNextImageOverride(const std::uint8_t *rgba, std::uint32_t width, std::ui
     return;
   }
   const std::size_t bytes = static_cast<std::size_t>(width) * height * 4U;
-  std::lock_guard<std::mutex> lock(g_nextMutex);
-  g_nextPixels.assign(rgba, rgba + bytes);
-  g_nextWidth = width;
-  g_nextHeight = height;
+  g_nextOverride.arm(std::vector<std::uint8_t>(rgba, rgba + bytes), width, height);
 }
 
-void ClearNextImageOverride() {
-  std::lock_guard<std::mutex> lock(g_nextMutex);
-  g_nextPixels.clear();
-  g_nextWidth = 0;
-  g_nextHeight = 0;
-}
+void ClearNextImageOverride() { g_nextOverride.clear(); }
 
 // ---------------------------------------------------------------------------------------------
 // Diagnostics
@@ -730,13 +599,11 @@ void ReadMceImageHookDiagnostics(std::uint64_t out[4]) {
 
 void ReadCapeCaptureDiagnostics(std::uint64_t out[4]) {
   if (out == nullptr) return;
-  {
-    std::lock_guard<std::mutex> lock(g_capeMutex);
-    out[0] = (!g_capeBytes.empty() && g_capeWidth != 0) ? 1U : 0U;
-    out[1] = static_cast<std::uint64_t>(g_capeBytes.size());
-    out[2] = static_cast<std::uint64_t>(g_capeWidth);
-    out[3] = static_cast<std::uint64_t>(g_capeHeight);
-  }
+  const CapturedImageSlot::ImagePtr cape = g_capeCapture.get();
+  out[0] = cape ? 1U : 0U;
+  out[1] = cape ? static_cast<std::uint64_t>(cape->bytes.size()) : 0U;
+  out[2] = cape ? static_cast<std::uint64_t>(cape->width) : 0U;
+  out[3] = cape ? static_cast<std::uint64_t>(cape->height) : 0U;
   out[2] |= static_cast<std::uint64_t>(g_capeSubstitutions.load(std::memory_order_relaxed)) << 32;
 }
 
