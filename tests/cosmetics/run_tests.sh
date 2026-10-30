@@ -128,6 +128,16 @@ compile_run ImageOverrideRegistryTest \
 compile_run EngineAllocatorTest \
   "$here/EngineAllocatorTest.cpp"
 
+# The maps-line parser and basename match are pure too.
+compile_run ModulePathMatchTest \
+  "$here/ModulePathMatchTest.cpp" \
+  "$root/src/pl/memory/ModulePathMatch.cpp"
+
+# The ELF build-id reader is pure as well.
+compile_run ElfBuildIdTest \
+  "$here/ElfBuildIdTest.cpp" \
+  "$root/src/pl/memory/ElfBuildId.cpp"
+
 compile_run Utf8Test \
   "$here/Utf8Test.cpp"
 

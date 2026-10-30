@@ -3,21 +3,23 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
-#include <cinttypes>
 #include <cstdio>
 #include <cstdint>
-#include <cstring>
 #include <dlfcn.h>
 #include <mutex>
 #include <queue>
-#include <span>
 #include <shared_mutex>
+#include <span>
 #include <string>
 #include <string_view>
+#include <sys/uio.h>
+#include <unistd.h>
 #include <unordered_map>
 #include <vector>
 
 #include "pl/Logger.hpp"
+#include "pl/memory/ElfBuildId.hpp"
+#include "pl/memory/ModulePathMatch.hpp"
 
 namespace pl::memory {
 namespace {
@@ -39,10 +41,18 @@ struct ParsedPattern {
 struct MemoryRegion {
   uintptr_t start = 0;
   uintptr_t end = 0;
+  bool executable = false;
 };
 
 struct ModuleInfo {
+  /** Readable regions, in map order. */
   std::vector<MemoryRegion> regions;
+  /** The executable subset of `regions`; code signatures are scanned only here. */
+  std::vector<MemoryRegion> execRegions;
+  /** The lowest mapped address, used as the identity of this load. */
+  uintptr_t base = 0;
+  /** The ELF build id, or empty when it could not be read. Changes on every relink. */
+  std::string buildId;
   void *handle = nullptr;
 };
 
@@ -59,7 +69,6 @@ struct AnchorNode {
   AnchorNode() { next.fill(-1); }
 };
 
-std::unordered_map<std::string, ModuleInfo> moduleCache;
 std::unordered_map<std::string, uintptr_t> sigCache;
 std::unordered_map<std::string, ParsedPattern> patternCache;
 std::shared_mutex cacheMutex;
@@ -199,62 +208,101 @@ void selectAnchor(ParsedPattern &pattern) {
   pattern.anchorSize = 1;
 }
 
-bool parseMapsLine(const char *line, const std::string &moduleName,
-                   MemoryRegion &region) {
-  if (std::strstr(line, moduleName.c_str()) == nullptr) return false;
+// Defined below; forward-declared so module collection can probe the ELF header.
+size_t ReadRegionSafely(uintptr_t start, size_t size, uint8_t *out);
 
-  uintptr_t start = 0;
-  uintptr_t end = 0;
-  char perms[5] = {};
-  if (std::sscanf(line, "%" SCNxPTR "-%" SCNxPTR " %4s", &start, &end,
-                  perms) != 3) {
-    return false;
+// Whether a module's regions are actually mapped at the addresses we would scan.
+bool RegionsAreMapped(const ModuleInfo &module) {
+  if (module.regions.empty()) return false;
+  unsigned char probe = 0;
+  for (const auto &region : module.regions) {
+    iovec local{&probe, 1};
+    iovec remote{reinterpret_cast<void *>(region.start), 1};
+    if (::process_vm_readv(::getpid(), &local, 1, &remote, 1, 0) != 1) {
+      return false;
+    }
   }
-  if (end <= start || perms[0] != 'r') return false;
-  region = MemoryRegion{start, end};
   return true;
 }
 
-void addReadableRegion(ModuleInfo &module, uintptr_t start, uintptr_t end) {
-  if (!module.regions.empty() && module.regions.back().end == start) {
-    module.regions.back().end = end;
-    return;
-  }
-  module.regions.push_back(MemoryRegion{start, end});
-}
-
+// Collects a module's readable regions, and its executable subset, by matching the **basename** of
+// the maps path column exactly. A `strstr` on the whole line also matches a path that merely
+// contains the name (`libpreloader_extra.so` for `libpreloader.so`), which would scan the wrong
+// regions and can resolve a pattern into an unrelated library.
 bool getModuleInfo(const std::string &name, ModuleInfo &out) {
   FILE *maps = std::fopen("/proc/self/maps", "r");
   if (!maps) return false;
 
+  bool first = true;
   char line[4096];
   while (std::fgets(line, sizeof(line), maps)) {
-    MemoryRegion region{};
-    if (parseMapsLine(line, name, region)) {
-      addReadableRegion(out, region.start, region.end);
+    MapsLine parsed{};
+    if (!ParseMapsLine(line, parsed)) continue;
+    if (!MapsPathNamesModule(parsed.path, name)) continue;
+    if (!MapsPermsReadable(parsed.perms)) continue;
+
+    const bool executable = MapsPermsExecutable(parsed.perms);
+    if (!out.regions.empty() && out.regions.back().end == parsed.start &&
+        out.regions.back().executable == executable) {
+      out.regions.back().end = parsed.end;
+    } else {
+      out.regions.push_back(MemoryRegion{parsed.start, parsed.end, executable});
     }
+    if (executable) {
+      if (!out.execRegions.empty() && out.execRegions.back().end == parsed.start) {
+        out.execRegions.back().end = parsed.end;
+      } else {
+        out.execRegions.push_back(MemoryRegion{parsed.start, parsed.end, true});
+      }
+    }
+    if (first || parsed.start < out.base) out.base = parsed.start;
+    first = false;
   }
   std::fclose(maps);
   if (out.regions.empty()) return false;
 
+  // The ELF build id identifies this exact binary, so a cached scan can be trusted only for the
+  // same build. It lives in the first page, so a small fault-safe read of the load base is enough.
+  constexpr std::size_t kHeaderProbeBytes = 4096;
+  std::vector<std::uint8_t> header(std::min(kHeaderProbeBytes, out.regions.front().end -
+                                                                 out.regions.front().start));
+  const size_t headerRead =
+      ReadRegionSafely(out.regions.front().start, header.size(), header.data());
+  if (headerRead > 0) {
+    ReadElfBuildId(header.data(), headerRead, out.buildId);
+  }
+
+  // `RTLD_NOLOAD` only: a signature lookup must never load a library as a side effect. Without a
+  // handle the module is still scanned by byte pattern, so the handle is an optimisation (dlsym of
+  // an exported name) rather than a requirement.
   out.handle = dlopen(name.c_str(), RTLD_LAZY | RTLD_NOLOAD);
-  if (!out.handle) out.handle = dlopen(name.c_str(), RTLD_LAZY);
   return true;
 }
 
-ModuleInfo getCachedModuleInfo(const std::string &moduleName) {
+// The module cache. A cached entry is re-validated by probing that its regions are still mapped, so
+// a module that was unmapped or reloaded at different addresses is re-read instead of answering from
+// a stale region list.
+std::unordered_map<std::string, ModuleInfo> moduleCache;
+
+ModuleInfo getModuleInfoFresh(const std::string &moduleName) {
   {
     std::shared_lock lock(cacheMutex);
     const auto it = moduleCache.find(moduleName);
-    if (it != moduleCache.end()) return it->second;
+    if (it != moduleCache.end()) {
+      ModuleInfo cached = it->second;
+      // Cheap identity re-check: the regions must still be mapped. This costs a few
+      // `process_vm_readv` calls and catches a module that was unmapped since it was cached.
+      if (RegionsAreMapped(cached)) return cached;
+      // Fall through to a fresh read; the stale entry is replaced below.
+    }
   }
 
   ModuleInfo module;
   if (!getModuleInfo(moduleName, module)) return {};
 
   std::unique_lock lock(cacheMutex);
-  const auto [it, inserted] = moduleCache.emplace(moduleName, module);
-  return inserted ? module : it->second;
+  moduleCache[moduleName] = module;
+  return module;
 }
 
 ParsedPattern getCachedPattern(const std::string &signature) {
@@ -379,6 +427,18 @@ buildAnchorAutomaton(const std::vector<CompiledPattern> &patterns,
   return nodes;
 }
 
+// Reads a region into a local buffer through `process_vm_readv`, which faults on the reader's side
+// rather than the target's: a region that unmaps between the maps parse and the read makes the
+// syscall return short, and the caller skips it instead of dereferencing freed memory. The returned
+// count is the number of bytes actually read.
+size_t ReadRegionSafely(uintptr_t start, size_t size, uint8_t *out) {
+  if (size == 0) return 0;
+  iovec local{out, size};
+  iovec remote{reinterpret_cast<void *>(start), size};
+  const ssize_t read = ::process_vm_readv(::getpid(), &local, 1, &remote, 1, 0);
+  return read > 0 ? static_cast<size_t>(read) : 0;
+}
+
 void scanCompiledPatterns(const std::vector<MemoryRegion> &regions,
                           const std::vector<CompiledPattern> &patterns,
                           std::unordered_map<std::string, uintptr_t> &results) {
@@ -403,49 +463,71 @@ void scanCompiledPatterns(const std::vector<MemoryRegion> &regions,
   std::vector<size_t> maskedPatterns;
   const auto nodes = buildAnchorAutomaton(patterns, active, maskedPatterns);
 
-  auto tryMatch = [&](const MemoryRegion &region, const uint8_t *data,
-                      size_t regionSize, size_t anchorOffset,
-                      size_t patternIndex) {
+  auto tryMatch = [&](uintptr_t bufferBase, const uint8_t *data, size_t bufferSize,
+                      size_t anchorOffset, size_t patternIndex) {
     if (!active[patternIndex]) return;
     const auto &pattern = patterns[patternIndex].pattern;
-    if (regionSize < pattern.bytes.size() ||
-        anchorOffset < pattern.anchorIndex ||
-        !matchesAnchorAt(data, regionSize, anchorOffset, pattern)) {
+    if (bufferSize < pattern.bytes.size() || anchorOffset < pattern.anchorIndex ||
+        !matchesAnchorAt(data, bufferSize, anchorOffset, pattern)) {
       return;
     }
 
     const size_t candidateOffset = anchorOffset - pattern.anchorIndex;
-    if (candidateOffset > regionSize - pattern.bytes.size() ||
+    if (candidateOffset > bufferSize - pattern.bytes.size() ||
         !matchesPatternAt(data + candidateOffset, pattern)) {
       return;
     }
 
-    found[patternIndex] = region.start + candidateOffset;
+    found[patternIndex] = bufferBase + candidateOffset;
     active[patternIndex] = false;
     --unresolved;
   };
 
+  // A region can be large (libminecraftpe's `.text` is ~220 MB), so it is read in windows. Each
+  // window is copied out with a fault-safe read; consecutive windows overlap by the longest pattern
+  // so a match that straddles a window boundary is still found.
+  size_t longestPattern = 1;
+  for (const auto &pattern : patterns) {
+    longestPattern = std::max(longestPattern, pattern.pattern.bytes.size());
+  }
+  const size_t overlap = longestPattern > 1 ? longestPattern - 1 : 0;
+  constexpr size_t kWindowBytes = 1U << 20;
+  const size_t step = kWindowBytes > overlap ? kWindowBytes - overlap : kWindowBytes;
+  std::vector<uint8_t> buffer(kWindowBytes);
+
   for (const auto &region : regions) {
     if (unresolved == 0) break;
-    const auto *data = reinterpret_cast<const uint8_t *>(region.start);
     const size_t regionSize = region.end - region.start;
-    int state = 0;
 
-    for (size_t offset = 0; offset < regionSize && unresolved != 0; ++offset) {
-      state = nodes[state].next[data[offset]];
-      for (const size_t patternIndex : nodes[state].outputs) {
-        const auto anchorSize = patterns[patternIndex].pattern.anchorSize;
-        if (offset + 1 >= anchorSize) {
-          tryMatch(region, data, regionSize, offset + 1 - anchorSize,
-                   patternIndex);
-        }
+    for (size_t windowStart = 0; windowStart < regionSize && unresolved != 0;
+         windowStart += step) {
+      const size_t windowSize = std::min(kWindowBytes, regionSize - windowStart);
+      const size_t read = ReadRegionSafely(region.start + windowStart, windowSize, buffer.data());
+      if (read == 0) {
+        // The region unmapped or is unreadable; skip it rather than dereference it.
+        preloaderLogger.debug("signature scan: skipped an unreadable region at {:x}",
+                              static_cast<unsigned long long>(region.start));
+        continue;
       }
+      const uintptr_t bufferBase = region.start + windowStart;
+      const auto *data = buffer.data();
+      int state = 0;
 
-      for (const size_t patternIndex : maskedPatterns) {
-        if (!active[patternIndex]) continue;
-        const auto &pattern = patterns[patternIndex].pattern;
-        if (matches(pattern.bytes[pattern.anchorIndex], data[offset])) {
-          tryMatch(region, data, regionSize, offset, patternIndex);
+      for (size_t offset = 0; offset < read && unresolved != 0; ++offset) {
+        state = nodes[state].next[data[offset]];
+        for (const size_t patternIndex : nodes[state].outputs) {
+          const auto anchorSize = patterns[patternIndex].pattern.anchorSize;
+          if (offset + 1 >= anchorSize) {
+            tryMatch(bufferBase, data, read, offset + 1 - anchorSize, patternIndex);
+          }
+        }
+
+        for (const size_t patternIndex : maskedPatterns) {
+          if (!active[patternIndex]) continue;
+          const auto &pattern = patterns[patternIndex].pattern;
+          if (matches(pattern.bytes[pattern.anchorIndex], data[offset])) {
+            tryMatch(bufferBase, data, read, offset, patternIndex);
+          }
         }
       }
     }
@@ -456,11 +538,15 @@ void scanCompiledPatterns(const std::vector<MemoryRegion> &regions,
   }
 }
 
-std::string makeSignatureCacheKey(std::string_view moduleName,
+// The cache key includes the module's ELF build id, so a scan result is only reused for the exact
+// binary it was derived from: a game update relinks libminecraftpe and the offsets are re-derived
+// rather than answered from the previous build. Without a build id the module name is the key, which
+// is the pre-existing behaviour.
+std::string makeSignatureCacheKey(std::string_view moduleName, std::string_view buildId,
                                   std::string_view signature) {
   std::string key;
-  key.reserve(moduleName.size() + signature.size() + 2);
-  key.append(moduleName).append("::").append(signature);
+  key.reserve(moduleName.size() + buildId.size() + signature.size() + 4);
+  key.append(moduleName).append("::").append(buildId).append("::").append(signature);
   return key;
 }
 
@@ -478,10 +564,15 @@ resolveSignatures(std::span<const std::string> signatures,
     return results;
   }
 
+  // The module is resolved first, because the cache key carries its build id: a scan result is only
+  // reusable for the exact binary it was derived from, so a game update cannot answer from the
+  // previous build's offsets.
+  const ModuleInfo module = getModuleInfoFresh(std::string(moduleName));
+
   {
     std::shared_lock lock(cacheMutex);
     for (const auto &signature : signatures) {
-      const auto key = makeSignatureCacheKey(moduleName, signature);
+      const auto key = makeSignatureCacheKey(moduleName, module.buildId, signature);
       const auto cached = sigCache.find(key);
       if (cached != sigCache.end()) {
         results[signature] = cached->second;
@@ -493,7 +584,6 @@ resolveSignatures(std::span<const std::string> signatures,
 
   if (pending.empty()) return results;
 
-  const ModuleInfo module = getCachedModuleInfo(std::string(moduleName));
   if (module.regions.empty()) {
     for (const auto &signature : pending) results[signature] = 0;
   } else {
@@ -511,13 +601,19 @@ resolveSignatures(std::span<const std::string> signatures,
 
     if (!patterns.empty()) {
       const auto compiled = compilePatterns(patterns, results);
-      scanCompiledPatterns(module.regions, compiled, results);
+      // Code signatures are scanned only in the module's executable regions. A data section is
+      // never the target of a byte-pattern code signature, and including writable mappings both
+      // wastes the scan and can resolve a pattern to a mutable buffer that happens to hold the
+      // bytes.
+      const std::vector<MemoryRegion> &scanRegions =
+          module.execRegions.empty() ? module.regions : module.execRegions;
+      scanCompiledPatterns(scanRegions, compiled, results);
     }
   }
 
   std::unique_lock lock(cacheMutex);
   for (const auto &signature : pending) {
-    sigCache[makeSignatureCacheKey(moduleName, signature)] = results[signature];
+    sigCache[makeSignatureCacheKey(moduleName, module.buildId, signature)] = results[signature];
   }
   return results;
 }
@@ -531,27 +627,12 @@ uintptr_t resolveSignature(std::string_view signature,
 }
 
 bool isExecutableAddress(uintptr_t address, std::string_view moduleName) {
-  if (address == 0) return false;
-  FILE *maps = std::fopen("/proc/self/maps", "r");
-  if (!maps) return false;
-  char line[4096];
-  bool executable = false;
-  while (std::fgets(line, sizeof(line), maps)) {
-    if (std::strstr(line, std::string(moduleName).c_str()) == nullptr) continue;
-    uintptr_t start = 0;
-    uintptr_t end = 0;
-    char perms[5] = {};
-    if (std::sscanf(line, "%" SCNxPTR "-%" SCNxPTR " %4s", &start, &end, perms) != 3) {
-      continue;
-    }
-    // The executable bit is perms[2] ('x'); an address inside an r-xp mapping is code.
-    if (perms[2] == 'x' && address >= start && address < end) {
-      executable = true;
-      break;
-    }
+  if (address == 0 || moduleName.empty()) return false;
+  const ModuleInfo module = getModuleInfoFresh(std::string(moduleName));
+  for (const auto &region : module.execRegions) {
+    if (address >= region.start && address < region.end) return true;
   }
-  std::fclose(maps);
-  return executable;
+  return false;
 }
 
 }
