@@ -86,7 +86,7 @@ compile_run() {
   local name="$1"; shift
   echo "== $name =="
   "$cxx" -std=c++20 -O1 -g \
-    -I"$root/include" -I"$nlohmann" ${zlib_include:+-I"$zlib_include"} \
+    -I"$root/include" -I"$root/src" -I"$nlohmann" ${zlib_include:+-I"$zlib_include"} \
     "$@" -o "$work/$name"
   "$work/$name"
 }
@@ -115,6 +115,32 @@ compile_run NativeCosmeticDataTest \
 
 compile_run VersionCompareTest \
   "$here/VersionCompareTest.cpp"
+
+# The input bridge's callback snapshot is a pure header, so it needs no source file of its own.
+compile_run CallbackSnapshotTest \
+  "$here/CallbackSnapshotTest.cpp"
+
+# The image-override stores are a pure header too.
+compile_run ImageOverrideRegistryTest \
+  "$here/ImageOverrideRegistryTest.cpp"
+
+# The engine allocator is a pure header as well.
+compile_run EngineAllocatorTest \
+  "$here/EngineAllocatorTest.cpp"
+
+# The maps-line parser and basename match are pure too.
+compile_run ModulePathMatchTest \
+  "$here/ModulePathMatchTest.cpp" \
+  "$root/src/pl/memory/ModulePathMatch.cpp"
+
+# The ELF build-id reader is pure as well.
+compile_run ElfBuildIdTest \
+  "$here/ElfBuildIdTest.cpp" \
+  "$root/src/pl/memory/ElfBuildId.cpp"
+
+# The exported C ABI is compile-time-pinned, so a rename fails the build.
+compile_run LegacyAbiTest \
+  "$here/LegacyAbiTest.cpp"
 
 compile_run Utf8Test \
   "$here/Utf8Test.cpp"

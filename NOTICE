@@ -1,0 +1,24 @@
+preloader
+=========
+Copyright (C) 2026 ChimeraAnt-DEV
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+Bundled and fetched third-party components
+------------------------------------------
+The build fetches the following at configure time, each pinned by commit in CMakeLists.txt.
+Their licences are reproduced in full by their own repositories; the SPDX identifier is given
+here so a distributor can honour the attribution requirement.
+
+  nlohmann/json       9cca280a4d0ccf0c08f47a99aa71d1b0e52f8d03   MIT
+  boostorg/pfr        3fe5ce61eee743c6da097c28bc0b84bdf29f6cc4   BSL-1.0
+  Neargye/magic_enum  e046b69a3736d314fad813e159b1c192eaef92cd   MIT
+  fmtlib/fmt          40626af88bd7df9a5fb80be7b25ac85b122d6c21   MIT
+  sammycage/lunasvg   83c58df8103dc7dca423dfd824992af94d49bed6   MIT
+
+The following is vendored as a prebuilt static library under lib/ARM64/ and is not rebuilt here:
+
+  GlossHook (libGlossHook.a)                                      MIT
+
+The Android NDK's libc++ is linked dynamically and shipped by the client APK
+(libc++_shared.so); it is covered by the LLVM/University of Illinois licence.
