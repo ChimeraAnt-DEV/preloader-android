@@ -1,5 +1,16 @@
 #pragma once
 
+/**
+ * @file LegacyPatch.h
+ * @brief The C patch entry points (`pl_patch_*`).
+ *
+ * <p><b>Kept for binary compatibility, not for new code.</b> A new mod should use
+ * `pl::memory::Patch` (C++, in `pl/memory/Patch.hpp`), which validates the target mapping and
+ * flushes the instruction cache; the C entry points forward to the same implementation.
+ *
+ * <p>Nothing in this repository calls them.
+ */
+
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>

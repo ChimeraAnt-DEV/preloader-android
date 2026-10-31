@@ -122,7 +122,7 @@ Java_org_chimeramc_client_preloader_PreloaderInput_nativeOnTextInput(
   (void)clazz;
 
   auto decoded = DecodeText(env, text);
-  bool consumed = pl::runtime::DispatchTextInput(std::move(decoded.utf8));
+  bool consumed = pl::runtime::DispatchTextInput(decoded.utf8);
   if (!consumed) {
     // The synthetic key fallback is defined for printable ASCII only. A committed control byte
     // (Enter arrives as '\n' from several IMEs) must not be replayed as a "character" key --

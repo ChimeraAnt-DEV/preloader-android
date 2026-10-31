@@ -8,7 +8,7 @@ PL_LEGACY_EXPORT int pl_hook(PLFuncPtr target, PLFuncPtr detour,
                              PLFuncPtr *originalFunc,
                              PLHookPriority priority) {
   return pl::memory::hook(target, detour, originalFunc,
-                          static_cast<pl::memory::HookPriority>(priority));
+                          static_cast<pl::memory::HookPriority>(priority), "pl_hook");
 }
 
 PL_LEGACY_EXPORT bool pl_unhook(PLFuncPtr target, PLFuncPtr detour) {

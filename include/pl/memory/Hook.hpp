@@ -31,23 +31,13 @@ enum class HookPriority : int {
  * @param name Diagnostic label used in log lines (e.g. "PauseMenuOpen"). May be empty.
  * @return 0 on success, -1 on a failed/refused install.
  *
- * Three overloads are exported rather than one function with default arguments. A default
- * argument is resolved at the call site and does not emit a distinct symbol, so a library built
- * against the old 4-argument signature (e.g. libinbuiltmods.so) imports
- * `_ZN2pl6memory4hookEPvS1_PS1_NS0_12HookPriorityE`, which a 5-argument definition never
- * exports; the loader then fails with UnsatisfiedLinkError and every inbuilt mod silently dies.
- * The 4- and 3-argument overloads exist solely to keep those old binaries loadable. All three
- * forward to the one implementation below.
+ * The name is a parameter rather than a default argument: a default argument is resolved at the
+ * call site and does not emit a distinct symbol, so a library built against a shorter signature
+ * would import a symbol this library does not export and fail to load. There is one exported
+ * signature.
  */
 PL_EXPORT int hook(FuncPtr target, FuncPtr detour, FuncPtr *originalFunc,
                    HookPriority priority, std::string_view name);
-
-/** @copydoc hook(FuncPtr, FuncPtr, FuncPtr *, HookPriority, std::string_view) */
-PL_EXPORT int hook(FuncPtr target, FuncPtr detour, FuncPtr *originalFunc,
-                   HookPriority priority);
-
-/** @copydoc hook(FuncPtr, FuncPtr, FuncPtr *, HookPriority, std::string_view) */
-PL_EXPORT int hook(FuncPtr target, FuncPtr detour, FuncPtr *originalFunc);
 
 /**
  * @brief Removes a detour from a target function.
@@ -62,9 +52,9 @@ public:
   HookHandle() = default;
 
   HookHandle(FuncPtr target, FuncPtr detour, FuncPtr *originalFunc,
-             HookPriority priority = HookPriority::Normal)
+             HookPriority priority = HookPriority::Normal, std::string_view name = {})
       : mTarget(target), mDetour(detour),
-        mInstalled(hook(target, detour, originalFunc, priority) == 0) {}
+        mInstalled(hook(target, detour, originalFunc, priority, name) == 0) {}
 
   HookHandle(const HookHandle &) = delete;
   HookHandle &operator=(const HookHandle &) = delete;
